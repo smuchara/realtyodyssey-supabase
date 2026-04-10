@@ -1,0 +1,42 @@
+project_id = "realtyodyssey-frontend"
+
+[api]
+schemas = ["public", "graphql_public", "app"]
+extra_search_path = ["public", "extensions", "app"]
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = [
+  "http://localhost:3000/auth-callback",
+  "http://127.0.0.1:3000/auth-callback",
+  "http://localhost:3000/auth-callback?redirect_to=/reset-password",
+  "http://127.0.0.1:3000/auth-callback?redirect_to=/reset-password"
+]
+
+[auth.email]
+enable_signup = true
+enable_confirmations = true
+double_confirm_changes = true
+
+[auth.email.template.confirmation]
+subject = "Your RealtyOdyssey verification code"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.mfa]
+max_enrolled_factors = 10
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
+[functions.mpesa-create-setup]
+verify_jwt = true
+
+[functions.mpesa-register-c2b]
+verify_jwt = true
+
+[functions.mpesa-c2b-validation]
+verify_jwt = false
+
+[functions.mpesa-c2b-confirmation]
+verify_jwt = false

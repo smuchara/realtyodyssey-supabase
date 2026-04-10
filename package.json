@@ -1,0 +1,20 @@
+{
+  "name": "@realtyodyssey/supabase",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "supabase:cli": "npx supabase --workdir .."
+  },
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.7"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "typescript": "5.9.2"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+.temp/
+.branches/
+
+# Local environment overrides
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
