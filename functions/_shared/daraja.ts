@@ -37,14 +37,14 @@ function getDarajaBaseUrl() {
 function getOAuthUrl() {
   return (
     Deno.env.get("MPESA_OAUTH_URL") ??
-    `${getDarajaBaseUrl()}/oauth/v1/generate?grant_type=client_credentials`
+      `${getDarajaBaseUrl()}/oauth/v1/generate?grant_type=client_credentials`
   );
 }
 
 function getRegisterUrl() {
   return (
     Deno.env.get("MPESA_C2B_REGISTER_URL") ??
-    `${getDarajaBaseUrl()}/mpesa/c2b/v1/registerurl`
+      `${getDarajaBaseUrl()}/mpesa/c2b/v1/registerurl`
   );
 }
 
