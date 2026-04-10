@@ -49,7 +49,9 @@ function getRegisterUrl() {
 }
 
 export function buildSupabaseFunctionUrl(functionName: string) {
-  const explicit = Deno.env.get(`FUNCTION_URL_${functionName.toUpperCase().replace(/-/g, "_")}`);
+  const explicit = Deno.env.get(
+    `FUNCTION_URL_${functionName.toUpperCase().replace(/-/g, "_")}`,
+  );
   if (explicit) return explicit;
 
   return `${getEnv("SUPABASE_URL")}/functions/v1/${functionName}`;
@@ -97,7 +99,9 @@ export async function registerC2BUrls(
 
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(`Daraja register URL request failed: ${JSON.stringify(payload)}`);
+    throw new Error(
+      `Daraja register URL request failed: ${JSON.stringify(payload)}`,
+    );
   }
 
   return payload as RegisterC2BUrlsResult;

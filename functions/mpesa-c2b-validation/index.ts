@@ -14,10 +14,13 @@ Deno.serve(async (req) => {
     const payload = await parseJsonBody(req);
     const serviceClient = getServiceRoleClient();
 
-    const { data, error } = await serviceClient.rpc("record_mpesa_c2b_callback", {
-      p_event_type: "c2b_validation",
-      p_payload: payload,
-    });
+    const { data, error } = await serviceClient.rpc(
+      "record_mpesa_c2b_callback",
+      {
+        p_event_type: "c2b_validation",
+        p_payload: payload,
+      },
+    );
 
     if (error) {
       return jsonResponse(

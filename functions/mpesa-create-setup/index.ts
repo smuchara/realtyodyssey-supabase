@@ -1,4 +1,7 @@
-import { registerC2BUrls, buildSupabaseFunctionUrl } from "../_shared/daraja.ts";
+import {
+  buildSupabaseFunctionUrl,
+  registerC2BUrls,
+} from "../_shared/daraja.ts";
 import {
   errorResponse,
   handleOptions,
@@ -68,7 +71,8 @@ Deno.serve(async (req) => {
     if (
       registerUrls !== false &&
       activate === true &&
-      (paymentMethodType === "mpesa_paybill" || paymentMethodType === "mpesa_till")
+      (paymentMethodType === "mpesa_paybill" ||
+        paymentMethodType === "mpesa_till")
     ) {
       const serviceClient = getServiceRoleClient();
       const { data: setup, error: setupError } = await serviceClient
@@ -94,11 +98,14 @@ Deno.serve(async (req) => {
           validationUrl: buildSupabaseFunctionUrl("mpesa-c2b-validation"),
         });
 
-        await serviceClient.rpc("mark_payment_collection_setup_mpesa_registration", {
-          p_setup_id: setupId,
-          p_status: "registered",
-          p_response: response,
-        });
+        await serviceClient.rpc(
+          "mark_payment_collection_setup_mpesa_registration",
+          {
+            p_setup_id: setupId,
+            p_status: "registered",
+            p_response: response,
+          },
+        );
 
         registration = {
           status: "registered",
@@ -109,11 +116,14 @@ Deno.serve(async (req) => {
           ? registrationError.message
           : "Unknown Daraja registration error";
 
-        await serviceClient.rpc("mark_payment_collection_setup_mpesa_registration", {
-          p_setup_id: setupId,
-          p_status: "failed",
-          p_response: { error: message },
-        });
+        await serviceClient.rpc(
+          "mark_payment_collection_setup_mpesa_registration",
+          {
+            p_setup_id: setupId,
+            p_status: "failed",
+            p_response: { error: message },
+          },
+        );
 
         registration = {
           status: "failed",
