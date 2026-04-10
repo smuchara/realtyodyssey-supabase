@@ -1,0 +1,102 @@
+name: Supabase Manual Operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Choose the production action to run
+        required: true
+        type: choice
+        options:
+          - deploy_all
+          - deploy_db_only
+          - deploy_functions_only
+      functions:
+        description: Comma-separated function names for functions-only deploys
+        required: false
+        default: mpesa-create-setup,mpesa-register-c2b,mpesa-c2b-validation,mpesa-c2b-confirmation
+      confirm_production:
+        description: Type DEPLOY_PRODUCTION to confirm this manual production action
+        required: true
+        type: string
+
+jobs:
+  manual-production-operation:
+    name: Manual Production Operation
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        shell: bash
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_PRODUCTION }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
+      REQUESTED_OPERATION: ${{ inputs.operation }}
+      REQUESTED_FUNCTIONS: ${{ inputs.functions }}
+      CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+    steps:
+      - name: Enforce production confirmation
+        run: |
+          if [[ "$CONFIRM_PRODUCTION" != "DEPLOY_PRODUCTION" ]]; then
+            echo "Manual production action cancelled: confirmation text did not match."
+            exit 1
+          fi
+
+      - name: Restrict manual production refs
+        run: |
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            exit 0
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            exit 0
+          fi
+
+          echo "Manual production operations must run from main or a tagged release ref."
+          exit 1
+
+      - name: Checkout repository into Supabase folder
+        uses: actions/checkout@v4
+        with:
+          path: supabase
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.84.2
+
+      - name: Link repository to production project
+        run: supabase link --workdir . --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Push database migrations
+        if: inputs.operation == 'deploy_all' || inputs.operation == 'deploy_db_only'
+        run: supabase db push --workdir . --linked
+
+      - name: Deploy default function set
+        if: inputs.operation == 'deploy_all'
+        run: |
+          supabase functions deploy mpesa-create-setup --workdir . --project-ref "$SUPABASE_PROJECT_REF"
+          supabase functions deploy mpesa-register-c2b --workdir . --project-ref "$SUPABASE_PROJECT_REF"
+          supabase functions deploy mpesa-c2b-validation --workdir . --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+          supabase functions deploy mpesa-c2b-confirmation --workdir . --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+
+      - name: Deploy selected functions
+        if: inputs.operation == 'deploy_functions_only'
+        run: |
+          IFS=',' read -ra FUNCTIONS <<< "$REQUESTED_FUNCTIONS"
+
+          for raw_name in "${FUNCTIONS[@]}"; do
+            name="$(echo "$raw_name" | xargs)"
+
+            if [[ -z "$name" ]]; then
+              continue
+            fi
+
+            args=(functions deploy "$name" --workdir . --project-ref "$SUPABASE_PROJECT_REF")
+            if [[ "$name" == "mpesa-c2b-validation" || "$name" == "mpesa-c2b-confirmation" ]]; then
+              args+=(--no-verify-jwt)
+            fi
+
+            supabase "${args[@]}"
+          done

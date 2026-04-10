@@ -1,0 +1,122 @@
+name: Supabase Backend
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: supabase-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Local Stack
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository into Supabase folder
+        uses: actions/checkout@v4
+        with:
+          path: supabase
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: supabase/pnpm-lock.yaml
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.84.2
+
+      - name: Install backend dependencies
+        working-directory: supabase
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check Node utilities
+        working-directory: supabase
+        run: pnpm run typecheck
+
+      - name: Check Edge Function formatting
+        working-directory: supabase
+        run: pnpm run functions:fmt:check
+
+      - name: Lint Edge Functions
+        working-directory: supabase
+        run: pnpm run functions:lint
+
+      - name: Type-check Edge Functions
+        working-directory: supabase
+        run: pnpm run functions:check
+
+      - name: Start local Supabase stack
+        run: supabase start --workdir .
+
+      - name: Reset local database from migrations
+        run: supabase db reset --workdir . --local
+
+      - name: Show local Supabase status
+        run: supabase status --workdir .
+
+      - name: Stop local Supabase stack
+        if: always()
+        run: supabase stop --workdir .
+
+  deploy-production:
+    name: Deploy Production
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    defaults:
+      run:
+        shell: bash
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_PRODUCTION }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
+    steps:
+      - name: Checkout repository into Supabase folder
+        uses: actions/checkout@v4
+        with:
+          path: supabase
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.84.2
+
+      - name: Link repository to production project
+        run: supabase link --workdir . --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Push database migrations to production
+        run: supabase db push --workdir . --linked
+
+      - name: Deploy mpesa-create-setup function
+        run: supabase functions deploy mpesa-create-setup --workdir . --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Deploy mpesa-register-c2b function
+        run: supabase functions deploy mpesa-register-c2b --workdir . --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Deploy mpesa-c2b-validation function
+        run: supabase functions deploy mpesa-c2b-validation --workdir . --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+
+      - name: Deploy mpesa-c2b-confirmation function
+        run: supabase functions deploy mpesa-c2b-confirmation --workdir . --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt

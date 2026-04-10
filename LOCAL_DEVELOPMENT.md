@@ -398,3 +398,18 @@ When the clean chain is proven locally:
 4. Only then plan production rollout steps
 
 Do not switch production deployment back on until the local clean chain passes the critical flows end to end.
+
+## 14. How this maps to CI/CD
+
+The GitHub Actions pipeline mirrors this same separation:
+
+- Feature branches and pull requests validate locally only
+- `main` validates first, then deploys to production
+
+That means your safe workflow is:
+
+1. Make migration or function changes on a non-main branch
+2. Test with local Supabase and your local apps
+3. Open a pull request and let CI rerun the same local validation
+4. Merge to `main` only when the local branch behavior is proven
+5. Let the protected production job push the approved state live
