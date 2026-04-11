@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: supabase-backend-${{ github.ref }}
   cancel-in-progress: true
@@ -15,6 +18,7 @@ jobs:
   validate:
     name: Validate Local Stack
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -85,6 +89,7 @@ jobs:
   deploy-production:
     name: Deploy Production
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: validate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
@@ -95,6 +100,11 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_PRODUCTION }}
       SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
+      PRODUCTION_FUNCTIONS: |
+        mpesa-create-setup
+        mpesa-register-c2b
+        mpesa-c2b-validation
+        mpesa-c2b-confirmation
     steps:
       - name: Checkout repository into Supabase folder
         uses: actions/checkout@v4
@@ -106,20 +116,48 @@ jobs:
         with:
           version: 2.84.2
 
+      - name: Verify production secrets are configured
+        run: |
+          missing=0
+
+          for secret_name in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_REF; do
+            if [[ -z "${!secret_name}" ]]; then
+              echo "Missing required production secret: $secret_name"
+              missing=1
+            fi
+          done
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Confirm main branch deployment
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Automatic production deploys are only allowed from main."
+            exit 1
+          fi
+
       - name: Link repository to production project
         run: supabase link --workdir . --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Show linked migration state
+        run: supabase migration list --workdir . --linked
 
       - name: Push database migrations to production
         run: supabase db push --workdir . --linked
 
-      - name: Deploy mpesa-create-setup function
-        run: supabase functions deploy mpesa-create-setup --workdir . --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Deploy tracked production functions
+        run: |
+          while IFS= read -r function_name; do
+            if [[ -z "$function_name" ]]; then
+              continue
+            fi
 
-      - name: Deploy mpesa-register-c2b function
-        run: supabase functions deploy mpesa-register-c2b --workdir . --project-ref "$SUPABASE_PROJECT_REF"
+            args=(functions deploy "$function_name" --workdir . --project-ref "$SUPABASE_PROJECT_REF")
+            if [[ "$function_name" == "mpesa-c2b-validation" || "$function_name" == "mpesa-c2b-confirmation" ]]; then
+              args+=(--no-verify-jwt)
+            fi
 
-      - name: Deploy mpesa-c2b-validation function
-        run: supabase functions deploy mpesa-c2b-validation --workdir . --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
-
-      - name: Deploy mpesa-c2b-confirmation function
-        run: supabase functions deploy mpesa-c2b-confirmation --workdir . --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+            supabase "${args[@]}"
+          done <<< "$PRODUCTION_FUNCTIONS"

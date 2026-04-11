@@ -20,10 +20,14 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   manual-production-operation:
     name: Manual Production Operation
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: production
     defaults:
       run:
@@ -36,6 +40,21 @@ jobs:
       REQUESTED_FUNCTIONS: ${{ inputs.functions }}
       CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
     steps:
+      - name: Verify production secrets are configured
+        run: |
+          missing=0
+
+          for secret_name in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD SUPABASE_PROJECT_REF; do
+            if [[ -z "${!secret_name}" ]]; then
+              echo "Missing required production secret: $secret_name"
+              missing=1
+            fi
+          done
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
       - name: Enforce production confirmation
         run: |
           if [[ "$CONFIRM_PRODUCTION" != "DEPLOY_PRODUCTION" ]]; then
