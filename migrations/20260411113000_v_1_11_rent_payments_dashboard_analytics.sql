@@ -749,9 +749,9 @@ begin
       coalesce(max(case when bucket_key = 'days_4_7' then current_pct - previous_pct end), 0) as mid_term_delta_pct,
       coalesce(max(case when bucket_key = 'days_7_plus' then current_pct end), 0) as long_delay_pct,
       coalesce(max(case when bucket_key = 'on_time' then current_pct end), 0) as on_time_pct,
-      rs.consistency_index,
-      rs.stable_units,
-      rs.tracked_units
+      max(rs.consistency_index) as consistency_index,
+      max(rs.stable_units) as stable_units,
+      max(rs.tracked_units) as tracked_units
     from behavior_comparison
     cross join reliability_source rs
   )
