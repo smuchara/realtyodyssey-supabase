@@ -2,6 +2,10 @@
 
 This folder is the Supabase project root for RealtyOdyssey production operations.
 
+Quick command lookup:
+
+- [SUPABASE_COMMAND_REFERENCE.md](C:\RealtyOdyssey\supabase\SUPABASE_COMMAND_REFERENCE.md)
+
 The canonical Supabase backend now lives in:
 
 ```powershell

@@ -2,6 +2,10 @@
 
 This document explains how to run the RealtyOdyssey Supabase stack locally with Docker and connect it to either the Next.js app in this repo or the Flutter app in the separate mobile repo.
 
+Quick command lookup:
+
+- [SUPABASE_COMMAND_REFERENCE.md](C:\RealtyOdyssey\supabase\SUPABASE_COMMAND_REFERENCE.md)
+
 The local Supabase project root is:
 
 ```text
