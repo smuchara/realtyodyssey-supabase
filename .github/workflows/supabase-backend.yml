@@ -4,7 +4,21 @@ on:
   push:
     branches:
       - "**"
+    paths-ignore:
+      - "functions/**"
+      - "deno.json"
+      - "config.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig.json"
   pull_request:
+    paths-ignore:
+      - "functions/**"
+      - "deno.json"
+      - "config.toml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig.json"
   workflow_dispatch:
 
 permissions:
@@ -14,7 +28,7 @@ concurrency:
   group: supabase-backend-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
+jobs
   validate:
     name: Validate Local Stack
     runs-on: ubuntu-latest
@@ -100,11 +114,6 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_PRODUCTION }}
       SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
-      PRODUCTION_FUNCTIONS: |
-        mpesa-create-setup
-        mpesa-register-c2b
-        mpesa-c2b-validation
-        mpesa-c2b-confirmation
     steps:
       - name: Checkout repository into Supabase folder
         uses: actions/checkout@v4
@@ -146,18 +155,3 @@ jobs:
 
       - name: Push database migrations to production
         run: supabase db push --workdir . --linked
-
-      - name: Deploy tracked production functions
-        run: |
-          while IFS= read -r function_name; do
-            if [[ -z "$function_name" ]]; then
-              continue
-            fi
-
-            args=(functions deploy "$function_name" --workdir . --project-ref "$SUPABASE_PROJECT_REF")
-            if [[ "$function_name" == "mpesa-c2b-validation" || "$function_name" == "mpesa-c2b-confirmation" ]]; then
-              args+=(--no-verify-jwt)
-            fi
-
-            supabase "${args[@]}"
-          done <<< "$PRODUCTION_FUNCTIONS"
