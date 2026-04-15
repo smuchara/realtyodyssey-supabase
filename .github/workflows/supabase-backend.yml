@@ -28,7 +28,7 @@ concurrency:
   group: supabase-backend-${{ github.ref }}
   cancel-in-progress: true
 
-jobs
+jobs:
   validate:
     name: Validate Local Stack
     runs-on: ubuntu-latest
