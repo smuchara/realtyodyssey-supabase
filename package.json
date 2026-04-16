@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "functions:fmt:check": "deno fmt --check functions",
     "functions:lint": "deno lint functions",
-    "functions:check": "deno check functions/mpesa-create-setup/index.ts functions/mpesa-register-c2b/index.ts functions/mpesa-c2b-validation/index.ts functions/mpesa-c2b-confirmation/index.ts"
+    "functions:check": "deno check functions/mpesa-create-setup/index.ts functions/mpesa-register-c2b/index.ts functions/daraja-c2b-validation/index.ts functions/daraja-c2b-confirmation/index.ts"
   },
   "main": "src/index.ts",
   "types": "src/index.ts",

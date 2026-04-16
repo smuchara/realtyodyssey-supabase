@@ -35,8 +35,8 @@ verify_jwt = false
 [functions.mpesa-register-c2b]
 verify_jwt = false
 
-[functions.mpesa-c2b-validation]
+[functions.daraja-c2b-validation]
 verify_jwt = false
 
-[functions.mpesa-c2b-confirmation]
+[functions.daraja-c2b-confirmation]
 verify_jwt = false
