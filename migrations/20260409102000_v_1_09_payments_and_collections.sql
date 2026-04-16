@@ -99,7 +99,7 @@ create table if not exists app.payment_collection_setups (
   metadata jsonb not null default '{}'::jsonb,
   activated_at timestamptz,
   deactivated_at timestamptz,
-  replaced_by_setup_id uuid references app.payment_collection_setups(id) on delete set null,
+  replaced_by_setup_id uuid references app.payment_collection_setups(id) on delete set null deferrable initially deferred,
   created_by_user_id uuid not null references auth.users(id) on delete restrict,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),

@@ -18,6 +18,9 @@ export function getServiceRoleClient() {
         persistSession: false,
         autoRefreshToken: false,
       },
+      db: {
+        schema: "app",
+      },
     },
   );
 }
@@ -35,6 +38,9 @@ export function getRequestClient(req: Request) {
       auth: {
         persistSession: false,
         autoRefreshToken: false,
+      },
+      db: {
+        schema: "app",
       },
       global: {
         headers: {

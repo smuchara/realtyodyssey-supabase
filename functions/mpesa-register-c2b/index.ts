@@ -66,8 +66,8 @@ Deno.serve(async (req) => {
     try {
       const response = await registerC2BUrls({
         shortCode,
-        confirmationUrl: buildSupabaseFunctionUrl("mpesa-c2b-confirmation"),
-        validationUrl: buildSupabaseFunctionUrl("mpesa-c2b-validation"),
+        confirmationUrl: buildSupabaseFunctionUrl("daraja-c2b-confirmation"),
+        validationUrl: buildSupabaseFunctionUrl("daraja-c2b-validation"),
       });
 
       await serviceClient.rpc(

@@ -795,26 +795,31 @@ revoke all on schema app from public;
 revoke all on schema app from anon;
 revoke all on schema app from authenticated;
 grant usage on schema app to authenticated;
+grant usage on schema app to service_role;
 
 revoke all on all tables in schema app from public;
 revoke all on all tables in schema app from anon;
 revoke all on all tables in schema app from authenticated;
 grant select on all tables in schema app to authenticated;
+grant all privileges on all tables in schema app to service_role;
 
 revoke all on all sequences in schema app from public;
 revoke all on all sequences in schema app from anon;
 revoke all on all sequences in schema app from authenticated;
 grant usage, select on all sequences in schema app to authenticated;
+grant all privileges on all sequences in schema app to service_role;
 
 alter default privileges in schema app revoke all on tables from public;
 alter default privileges in schema app revoke all on tables from anon;
 alter default privileges in schema app revoke all on tables from authenticated;
 alter default privileges in schema app grant select on tables to authenticated;
+alter default privileges in schema app grant all privileges on tables to service_role;
 
 alter default privileges in schema app revoke all on sequences from public;
 alter default privileges in schema app revoke all on sequences from anon;
 alter default privileges in schema app revoke all on sequences from authenticated;
 alter default privileges in schema app grant usage, select on sequences to authenticated;
+alter default privileges in schema app grant all privileges on sequences to service_role;
 
 do $$
 declare
@@ -829,6 +834,7 @@ begin
     execute format('revoke all on app.%I from anon', v_view_name);
     execute format('revoke all on app.%I from authenticated', v_view_name);
     execute format('grant select on app.%I to authenticated', v_view_name);
+    execute format('grant all on app.%I to service_role', v_view_name);
   end loop;
 end
 $$;
