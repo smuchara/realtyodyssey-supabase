@@ -6,6 +6,8 @@
 --   setup ID, which is required by the mobile app for payment initiation.
 -- ============================================================================
 
+drop function if exists app.get_active_payment_setup_for_tenant(uuid);
+
 create or replace function app.get_active_payment_setup_for_tenant(
   p_unit_id uuid
 )
