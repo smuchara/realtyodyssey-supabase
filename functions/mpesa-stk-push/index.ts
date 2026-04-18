@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-nocheck: Deno globals not recognized in some IDE environments
 import {
   buildSupabaseFunctionUrl,
   initiateStkPush,
@@ -64,7 +64,6 @@ Deno.serve(async (req: Request) => {
 
     // 2. Map fields from the setup
     const shortCode = setup.paybill_number ?? setup.till_number;
-    // @ts-ignore: Deno is available in Supabase Edge Functions environment
     const passKey = Deno.env.get("MPESA_PASSKEY"); // Must be set in Supabase Secrets
 
     if (!shortCode || !passKey) {
