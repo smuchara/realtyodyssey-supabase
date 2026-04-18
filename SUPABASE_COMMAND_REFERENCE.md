@@ -209,8 +209,8 @@ Deploy callback functions without JWT verification:
 
 ```powershell
 cd C:\RealtyOdyssey
-cmd /c npx supabase --workdir . functions deploy mpesa-c2b-validation --no-verify-jwt
-cmd /c npx supabase --workdir . functions deploy mpesa-c2b-confirmation --no-verify-jwt
+cmd /c npx supabase --workdir . functions deploy daraja-c2b-validation --no-verify-jwt
+cmd /c npx supabase --workdir . functions deploy daraja-c2b-confirmation --no-verify-jwt
 ```
 
 Download an existing remote function:
