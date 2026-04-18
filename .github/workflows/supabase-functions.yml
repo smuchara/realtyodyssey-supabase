@@ -199,13 +199,17 @@ jobs:
 
             args=(functions deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF")
             case "$function_name" in
-              mpesa-create-setup|mpesa-register-c2b|mpesa-c2b-validation|mpesa-c2b-confirmation)
+              mpesa-create-setup|mpesa-register-c2b|mpesa-c2b-validation|mpesa-c2b-confirmation|daraja-c2b-validation|daraja-c2b-confirmation)
                 args+=(--no-verify-jwt)
                 ;;
             esac
 
             echo "Deploying function: $function_name"
-            supabase "${args[@]}"
+            # Wrap in a supabase/ directory to satisfy CLI expectations in this root-project repo
+            mkdir -p supabase
+            cp -r functions config.toml supabase/
+            supabase "${args[@]}" --workdir supabase
+            rm -rf supabase
           done < functions_to_deploy.txt
 
       - name: Report skipped deployment

@@ -95,7 +95,7 @@ Deno.serve(async (req: Request) => {
       phoneNumber: formattedPhone,
       accountReference: setup.account_reference || "Rent",
       transactionDesc: `Rent Payment - ${unitId}`,
-      callbackUrl: buildSupabaseFunctionUrl("mpesa-callback"), // Placeholder for future callback handler
+      callbackUrl: buildSupabaseFunctionUrl("daraja-c2b-confirmation"),
     });
 
     return jsonResponse({
