@@ -61,7 +61,10 @@ Deno.serve(async (req) => {
         return errorResponse("Not authenticated", 401);
       }
       if (error.message?.includes("Forbidden")) {
-        return errorResponse("You do not have a confirmed tenancy for this unit", 403);
+        return errorResponse(
+          "You do not have a confirmed tenancy for this unit",
+          403,
+        );
       }
       if (error.message?.includes("Unit not found")) {
         return errorResponse("Unit not found", 404);
@@ -95,8 +98,8 @@ Deno.serve(async (req) => {
     return jsonResponse({
       setup: {
         paymentMethodType: setup.payment_method_type,
-        paymentMethodLabel:
-          paymentTypeLabel[setup.payment_method_type] ?? setup.payment_method_type,
+        paymentMethodLabel: paymentTypeLabel[setup.payment_method_type] ??
+          setup.payment_method_type,
         displayName: setup.display_name,
         accountName: setup.account_name,
         // Only one of these will be non-null based on payment method type

@@ -54,7 +54,10 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
 
       if (error || !data) {
-        return errorResponse("No active payment setup found for this unit", 404);
+        return errorResponse(
+          "No active payment setup found for this unit",
+          404,
+        );
       }
       setup = data;
     }
@@ -65,12 +68,19 @@ Deno.serve(async (req: Request) => {
     const passKey = Deno.env.get("MPESA_PASSKEY"); // Must be set in Supabase Secrets
 
     if (!shortCode || !passKey) {
-      return errorResponse("Payment setup is incomplete (missing shortcode or passkey)", 400);
+      return errorResponse(
+        "Payment setup is incomplete (missing shortcode or passkey)",
+        400,
+      );
     }
 
     // 3. Normalize phone number (Daraja expects 2547XXXXXXXX)
-    let formattedPhone = phoneNumber || user.phone || user.user_metadata?.phone || "";
-    formattedPhone = formattedPhone.toString().replace(/\+/g, "").replace(/\s/g, "");
+    let formattedPhone = phoneNumber || user.phone ||
+      user.user_metadata?.phone || "";
+    formattedPhone = formattedPhone.toString().replace(/\+/g, "").replace(
+      /\s/g,
+      "",
+    );
     if (formattedPhone.startsWith("0")) {
       formattedPhone = "254" + formattedPhone.substring(1);
     }
@@ -98,7 +108,7 @@ Deno.serve(async (req: Request) => {
   } catch (error) {
     return errorResponse(
       error instanceof Error ? error.message : "Internal Server Error",
-      500
+      500,
     );
   }
 });

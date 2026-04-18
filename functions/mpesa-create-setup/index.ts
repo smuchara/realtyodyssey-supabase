@@ -32,7 +32,9 @@ async function attemptDarajaRegistration(
       {
         p_setup_id: setupId,
         p_status: "registered",
-        p_response: { note: "Skipped in sandbox — marked as registered for testing" },
+        p_response: {
+          note: "Skipped in sandbox — marked as registered for testing",
+        },
       },
     );
     return;
@@ -121,8 +123,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    const shouldRegister =
-      registerUrls !== false &&
+    const shouldRegister = registerUrls !== false &&
       activate === true &&
       (paymentMethodType === "mpesa_paybill" ||
         paymentMethodType === "mpesa_till");
@@ -159,9 +160,7 @@ Deno.serve(async (req) => {
     // Respond immediately — Daraja registration happens in the background.
     return jsonResponse({
       setupId,
-      registration: shouldRegister
-        ? { status: "pending" }
-        : null,
+      registration: shouldRegister ? { status: "pending" } : null,
     });
   } catch (error) {
     return errorResponse(
