@@ -162,6 +162,21 @@ jobs:
 
             : > ../functions_to_deploy.txt
             for name in "${!selected_functions[@]}"; do echo "$name" >> ../functions_to_deploy.txt; done
+
+            # Smart Sync: Add any local function that is missing from the remote project
+            echo "Checking for missing remote functions..."
+            remote_list=$(supabase functions list --workdir . --project-ref "$SUPABASE_PROJECT_REF" --output json | jq -r '.[].name' || echo "")
+            for local_dir in functions/*/; do
+              [[ ! -d "$local_dir" ]] && continue
+              local_name=$(basename "$local_dir")
+              [[ "$local_name" == "_shared" ]] && continue
+              
+              if [[ ! "$remote_list" =~ (^|[[:space:]])"$local_name"($|[[:space:]]) ]]; then
+                echo "Detected missing remote function: $local_name. Adding to deployment."
+                echo "$local_name" >> ../functions_to_deploy.txt
+              fi
+            done
+            sort -u -o ../functions_to_deploy.txt ../functions_to_deploy.txt
           fi
 
           echo "count=$(grep -cve '^\s*$' ../functions_to_deploy.txt || true)" >> "$GITHUB_OUTPUT"
