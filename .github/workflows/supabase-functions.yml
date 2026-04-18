@@ -175,7 +175,7 @@ jobs:
           for remote_name in $remote_functions; do
             if [ ! -d "supabase/functions/$remote_name" ]; then
               echo "Pruning obsolete function: $remote_name"
-              supabase functions delete "$remote_name" --workdir . --project-ref "$SUPABASE_PROJECT_REF" --non-interactive
+              supabase functions delete "$remote_name" --workdir . --project-ref "$SUPABASE_PROJECT_REF" --yes
             fi
           done
 
