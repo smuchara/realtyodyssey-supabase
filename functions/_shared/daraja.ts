@@ -48,6 +48,30 @@ function getRegisterUrl() {
   );
 }
 
+/**
+ * Returns true when running in the Daraja sandbox environment.
+ * Used to skip broken sandbox behaviours like C2B URL registration.
+ */
+export function isSandboxMode(): boolean {
+  const env = (Deno.env.get("MPESA_ENVIRONMENT") ?? "sandbox")
+    .trim()
+    .toLowerCase();
+  return env !== "production";
+}
+
+/**
+ * Returns true when C2B URL registration should be skipped entirely.
+ * This is always true in sandbox (endpoint is unreliable) and can also
+ * be forced via MPESA_SKIP_C2B_REGISTRATION=true in any environment.
+ */
+export function shouldSkipC2BRegistration(): boolean {
+  const explicit = Deno.env.get("MPESA_SKIP_C2B_REGISTRATION");
+  if (explicit === "true") return true;
+  if (explicit === "false") return false;
+  // Default: skip in sandbox, register in production
+  return isSandboxMode();
+}
+
 export function buildSupabaseFunctionUrl(functionName: string) {
   const explicit = Deno.env.get(
     `FUNCTION_URL_${functionName.toUpperCase().replace(/-/g, "_")}`,
@@ -64,8 +88,11 @@ export async function getDarajaAccessToken() {
 
   const response = await fetch(getOAuthUrl(), {
     method: "GET",
+    signal: AbortSignal.timeout(25000),
     headers: {
       Authorization: `Basic ${credentials}`,
+      "User-Agent": "realtyodyssey-backend/1.0",
+      Accept: "application/json",
     },
   });
 
@@ -85,9 +112,12 @@ export async function registerC2BUrls(
   const accessToken = await getDarajaAccessToken();
   const response = await fetch(getRegisterUrl(), {
     method: "POST",
+    signal: AbortSignal.timeout(25000),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
+      "User-Agent": "realtyodyssey-backend/1.0",
+      Accept: "application/json",
     },
     body: JSON.stringify({
       ShortCode: input.shortCode,
@@ -106,3 +136,4 @@ export async function registerC2BUrls(
 
   return payload as RegisterC2BUrlsResult;
 }
+
