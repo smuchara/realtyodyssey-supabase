@@ -1,4 +1,4 @@
-// @ts-nocheck
+// @ts-nocheck: Deno globals not recognized in some IDE environments.
 type RegisterC2BUrlsInput = {
   shortCode: string;
   confirmationUrl: string;
@@ -11,6 +11,14 @@ type RegisterC2BUrlsResult = {
   OriginatorConversationID?: string;
   ResponseDescription?: string;
   [key: string]: unknown;
+};
+
+type StkPushResult = {
+  MerchantRequestID: string;
+  CheckoutRequestID: string;
+  ResponseCode: string;
+  ResponseDescription: string;
+  CustomerMessage: string;
 };
 
 function getEnv(name: string) {
@@ -154,7 +162,7 @@ export async function initiateStkPush(input: {
   accountReference: string;
   transactionDesc: string;
   callbackUrl: string;
-}): Promise<any> {
+}): Promise<StkPushResult> {
   const timestamp =
     new Date().toISOString().replace(/[-:T]/g, "").split(".")[0];
   const password = getDarajaPassword(input.shortCode, input.passKey, timestamp);
