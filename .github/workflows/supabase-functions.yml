@@ -120,6 +120,15 @@ jobs:
             exit 1
           fi
 
+      - name: Restructure workspace for Supabase CLI
+        run: |
+          mkdir -p supabase
+          # Move project files into the directory structure the CLI expects
+          cp -r functions config.toml deno.json supabase/
+          # Copy shared dependencies if any exist at root
+          [ -f package.json ] && cp package.json supabase/
+          [ -f pnpm-lock.yaml ] && cp pnpm-lock.yaml supabase/
+
       - name: Resolve changed functions
         id: changed-functions
         run: |
@@ -130,86 +139,65 @@ jobs:
             deploy_all=1
           fi
 
+          # If it's the first push or deployment is forced
           before_sha="${{ github.event.before }}"
-          current_sha="${{ github.sha }}"
-
           if [[ -z "$before_sha" || "$before_sha" == "0000000000000000000000000000000000000000" ]]; then
             deploy_all=1
-          fi
-
-          if [[ "$deploy_all" -eq 0 ]]; then
-            changed_files="$(git diff --name-only "$before_sha" "$current_sha")"
-
-            while IFS= read -r file; do
-              [[ -z "$file" ]] && continue
-
-              case "$file" in
-                config.toml|deno.json|package.json|pnpm-lock.yaml|tsconfig.json)
-                  deploy_all=1
-                  break
-                  ;;
-                functions/_shared/*)
-                  deploy_all=1
-                  break
-                  ;;
-              esac
-            done <<< "$changed_files"
           fi
 
           if [[ "$deploy_all" -eq 1 ]]; then
             find functions -mindepth 1 -maxdepth 1 -type d ! -name '_shared' -printf '%f\n' | sort > functions_to_deploy.txt
           else
             declare -A selected_functions=()
-
             while IFS= read -r file; do
               [[ -z "$file" ]] && continue
-
               if [[ "$file" =~ ^functions/([^/]+)/ ]]; then
                 function_name="${BASH_REMATCH[1]}"
-                if [[ "$function_name" != "_shared" ]]; then
-                  selected_functions["$function_name"]=1
-                fi
+                [[ "$function_name" != "_shared" ]] && selected_functions["$function_name"]=1
+              elif [[ "$file" =~ ^(config.toml|deno.json|_shared/) ]]; then
+                # Re-deploy all if shared config/helpers change
+                find functions -mindepth 1 -maxdepth 1 -type d ! -name '_shared' -printf '%f\n' | sort > functions_to_deploy.txt
+                echo "count=$(wc -l < functions_to_deploy.txt)" >> "$GITHUB_OUTPUT"
+                exit 0
               fi
-            done <<< "$(git diff --name-only "$before_sha" "$current_sha")"
+            done <<< "$(git diff --name-only "$before_sha" "${{ github.sha }}")"
 
             : > functions_to_deploy.txt
-            for function_name in "${!selected_functions[@]}"; do
-              echo "$function_name" >> functions_to_deploy.txt
-            done
-            sort -o functions_to_deploy.txt functions_to_deploy.txt
+            for name in "${!selected_functions[@]}"; do echo "$name" >> functions_to_deploy.txt; done
           fi
 
-          function_count="$(grep -cve '^\s*$' functions_to_deploy.txt || true)"
-          echo "count=$function_count" >> "$GITHUB_OUTPUT"
+          echo "count=$(grep -cve '^\s*$' functions_to_deploy.txt || true)" >> "$GITHUB_OUTPUT"
 
-          echo "Functions selected for deployment:"
-          if [[ "$function_count" -eq 0 ]]; then
-            echo "(none)"
-          else
-            cat functions_to_deploy.txt
-          fi
+      - name: Prune deleted functions
+        run: |
+          echo "Fetching remote functions..."
+          # List all deployed functions from Supabase Cloud
+          remote_functions=$(supabase functions list --project-ref "$SUPABASE_PROJECT_REF" --output json | jq -r '.[].name')
+
+          for remote_name in $remote_functions; do
+            if [ ! -d "functions/$remote_name" ]; then
+              echo "Pruning obsolete function: $remote_name"
+              supabase functions delete "$remote_name" --project-ref "$SUPABASE_PROJECT_REF" --non-interactive
+            fi
+          done
 
       - name: Deploy changed functions
         if: steps.changed-functions.outputs.count != '0'
         run: |
           while IFS= read -r function_name; do
-            if [[ -z "$function_name" ]]; then
-              continue
-            fi
+            [[ -z "$function_name" ]] && continue
 
-            args=(functions deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF")
+            args=(deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF")
+            
+            # Map specific functions that require skipped JWT verification
             case "$function_name" in
               mpesa-create-setup|mpesa-register-c2b|mpesa-c2b-validation|mpesa-c2b-confirmation|daraja-c2b-validation|daraja-c2b-confirmation)
                 args+=(--no-verify-jwt)
                 ;;
             esac
 
-            echo "Deploying function: $function_name"
-            # Wrap in a supabase/ directory to satisfy CLI expectations in this root-project repo
-            mkdir -p supabase
-            cp -r functions config.toml supabase/
-            supabase "${args[@]}" --workdir supabase
-            rm -rf supabase
+            echo "🚀 Deploying: $function_name"
+            supabase functions "${args[@]}"
           done < functions_to_deploy.txt
 
       - name: Report skipped deployment
