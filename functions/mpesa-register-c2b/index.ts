@@ -32,7 +32,9 @@ async function attemptDarajaRegistration(
       {
         p_setup_id: setupId,
         p_status: "registered",
-        p_response: { note: "Skipped in sandbox — marked as registered for testing" },
+        p_response: {
+          note: "Skipped in sandbox — marked as registered for testing",
+        },
       },
     );
     return;
