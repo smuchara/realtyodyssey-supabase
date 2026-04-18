@@ -191,4 +191,3 @@ export async function initiateStkPush(input: {
 
   return payload;
 }
-
