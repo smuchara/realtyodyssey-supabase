@@ -45,8 +45,10 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout repository
+      - name: Checkout repository into Supabase folder
         uses: actions/checkout@v4
+        with:
+          path: supabase
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -58,7 +60,7 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+          cache-dependency-path: supabase/pnpm-lock.yaml
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2
@@ -66,18 +68,23 @@ jobs:
           deno-version: v2.x
 
       - name: Install backend dependencies
+        working-directory: supabase
         run: pnpm install --frozen-lockfile
 
       - name: Type-check Node utilities
+        working-directory: supabase
         run: pnpm run typecheck
 
       - name: Check Edge Function formatting
+        working-directory: supabase
         run: pnpm run functions:fmt:check
 
       - name: Lint Edge Functions
+        working-directory: supabase
         run: pnpm run functions:lint
 
       - name: Type-check Edge Functions
+        working-directory: supabase
         run: pnpm run functions:check
 
   deploy-production-functions:
@@ -95,9 +102,10 @@ jobs:
       SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
       DEPLOY_ALL_INPUT: ${{ inputs.deploy_all }}
     steps:
-      - name: Checkout repository
+      - name: Checkout repository into Supabase folder
         uses: actions/checkout@v4
         with:
+          path: supabase
           fetch-depth: 0
 
       - name: Set up Supabase CLI
@@ -108,45 +116,35 @@ jobs:
       - name: Verify production secrets are configured
         run: |
           missing=0
-
           for secret_name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_REF; do
             if [[ -z "${!secret_name}" ]]; then
               echo "Missing required production secret: $secret_name"
               missing=1
             fi
           done
-
           if [[ "$missing" -ne 0 ]]; then
             exit 1
           fi
-
-      - name: Restructure workspace for Supabase CLI
-        run: |
-          mkdir -p supabase
-          # Move project files into the directory structure the CLI expects
-          cp -r functions config.toml deno.json supabase/
-          # Copy shared dependencies if any exist at root
-          [ -f package.json ] && cp package.json supabase/
-          [ -f pnpm-lock.yaml ] && cp pnpm-lock.yaml supabase/
 
       - name: Resolve changed functions
         id: changed-functions
         run: |
           set -euo pipefail
+          # We are at the runner root. The repo is in ./supabase
+          cd supabase
 
           deploy_all=0
           if [[ "${DEPLOY_ALL_INPUT:-false}" == "true" ]]; then
             deploy_all=1
           fi
 
-          # If it's the first push or deployment is forced
           before_sha="${{ github.event.before }}"
           if [[ -z "$before_sha" || "$before_sha" == "0000000000000000000000000000000000000000" ]]; then
             deploy_all=1
           fi
 
           if [[ "$deploy_all" -eq 1 ]]; then
-            find functions -mindepth 1 -maxdepth 1 -type d ! -name '_shared' -printf '%f\n' | sort > functions_to_deploy.txt
+            find functions -mindepth 1 -maxdepth 1 -type d ! -name '_shared' -printf '%f\n' | sort > ../functions_to_deploy.txt
           else
             declare -A selected_functions=()
             while IFS= read -r file; do
@@ -156,28 +154,28 @@ jobs:
                 [[ "$function_name" != "_shared" ]] && selected_functions["$function_name"]=1
               elif [[ "$file" =~ ^(config.toml|deno.json|_shared/) ]]; then
                 # Re-deploy all if shared config/helpers change
-                find functions -mindepth 1 -maxdepth 1 -type d ! -name '_shared' -printf '%f\n' | sort > functions_to_deploy.txt
-                echo "count=$(wc -l < functions_to_deploy.txt)" >> "$GITHUB_OUTPUT"
+                find functions -mindepth 1 -maxdepth 1 -type d ! -name '_shared' -printf '%f\n' | sort > ../functions_to_deploy.txt
+                echo "count=$(wc -l < ../functions_to_deploy.txt)" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
             done <<< "$(git diff --name-only "$before_sha" "${{ github.sha }}")"
 
-            : > functions_to_deploy.txt
-            for name in "${!selected_functions[@]}"; do echo "$name" >> functions_to_deploy.txt; done
+            : > ../functions_to_deploy.txt
+            for name in "${!selected_functions[@]}"; do echo "$name" >> ../functions_to_deploy.txt; done
           fi
 
-          echo "count=$(grep -cve '^\s*$' functions_to_deploy.txt || true)" >> "$GITHUB_OUTPUT"
+          echo "count=$(grep -cve '^\s*$' ../functions_to_deploy.txt || true)" >> "$GITHUB_OUTPUT"
 
       - name: Prune deleted functions
         run: |
           echo "Fetching remote functions..."
-          # List all deployed functions from Supabase Cloud
-          remote_functions=$(supabase functions list --project-ref "$SUPABASE_PROJECT_REF" --output json | jq -r '.[].name')
+          # Supabase CLI with --workdir . looks for ./supabase
+          remote_functions=$(supabase functions list --workdir . --project-ref "$SUPABASE_PROJECT_REF" --output json | jq -r '.[].name')
 
           for remote_name in $remote_functions; do
-            if [ ! -d "functions/$remote_name" ]; then
+            if [ ! -d "supabase/functions/$remote_name" ]; then
               echo "Pruning obsolete function: $remote_name"
-              supabase functions delete "$remote_name" --project-ref "$SUPABASE_PROJECT_REF" --non-interactive
+              supabase functions delete "$remote_name" --workdir . --project-ref "$SUPABASE_PROJECT_REF" --non-interactive
             fi
           done
 
@@ -187,9 +185,8 @@ jobs:
           while IFS= read -r function_name; do
             [[ -z "$function_name" ]] && continue
 
-            args=(deploy "$function_name" --project-ref "$SUPABASE_PROJECT_REF")
+            args=(functions deploy "$function_name" --workdir . --project-ref "$SUPABASE_PROJECT_REF")
             
-            # Map specific functions that require skipped JWT verification
             case "$function_name" in
               mpesa-create-setup|mpesa-register-c2b|mpesa-c2b-validation|mpesa-c2b-confirmation|daraja-c2b-validation|daraja-c2b-confirmation)
                 args+=(--no-verify-jwt)
@@ -197,7 +194,7 @@ jobs:
             esac
 
             echo "🚀 Deploying: $function_name"
-            supabase functions "${args[@]}"
+            supabase "${args[@]}"
           done < functions_to_deploy.txt
 
       - name: Report skipped deployment
