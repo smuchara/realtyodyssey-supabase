@@ -136,7 +136,7 @@ Deno.serve(async (req: Request) => {
         accountReference: setup.account_reference_hint || "Rent",
         transactionDesc: `Rent ${invoice.id.substring(0, 8)}`,
         callbackUrl: buildSupabaseFunctionUrl("mpesa-callback"),
-        transactionType
+        transactionType,
       });
 
       // 7. Update Request with Daraja IDs
