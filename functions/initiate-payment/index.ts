@@ -206,8 +206,8 @@ Deno.serve(async (req: Request) => {
         passKey,
         amount: targetAmount,
         phoneNumber: formattedPhone,
-        accountReference:
-          setup.account_reference ?? setup.account_reference_hint ?? "Rent",
+        accountReference: setup.account_reference ??
+          setup.account_reference_hint ?? "Rent",
         transactionDesc: targetInvoiceId
           ? `Rent ${targetInvoiceId.substring(0, 8)}`
           : `Advance Pay ${targetUnitId.substring(0, 8)}`,
