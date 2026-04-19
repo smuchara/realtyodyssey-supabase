@@ -1,16 +1,47 @@
 -- ============================================================================
--- V 1 19: Allow Advance M-Pesa STK Requests Without Invoice Allocation
+-- V 1 15: M-Pesa STK Lifecycle and Advance Payments
 -- ============================================================================
 -- Purpose:
---   - Allow STK requests initiated from advance-payment flows to be tracked
---     without requiring a rent charge period up front.
---   - Keep invoice-backed payments allocating automatically on callback.
---   - Leave advance payments as unapplied payment records until a later
---     allocation workflow assigns them to rent charge periods.
+--   - Persist STK Push requests before they are sent to Safaricom.
+--   - Track the status of each prompt attempt.
+--   - Ensure reliable matching of callbacks via CheckoutRequestID.
+--   - Support both invoice-backed and advance-payment STK flows.
 -- ============================================================================
 
-alter table app.mpesa_stk_requests
-  alter column rent_charge_period_id drop not null;
+create schema if not exists app;
+
+do $$ begin
+  create type app.mpesa_stk_status_enum as enum ('pending', 'success', 'failed', 'expired');
+exception when duplicate_object then null; end $$;
+
+create table if not exists app.mpesa_stk_requests (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references app.workspaces(id) on delete cascade,
+  property_id uuid references app.properties(id) on delete set null,
+  unit_id uuid references app.units(id) on delete set null,
+  rent_charge_period_id uuid references app.rent_charge_periods(id) on delete restrict,
+  payment_collection_setup_id uuid not null references app.payment_collection_setups(id) on delete restrict,
+  checkout_request_id text unique,
+  merchant_request_id text,
+  amount numeric(12,2) not null,
+  phone_number text not null,
+  status app.mpesa_stk_status_enum not null default 'pending',
+  result_code text,
+  result_desc text,
+  raw_callback_payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+comment on table app.mpesa_stk_requests is
+  'Tracks the lifecycle of M-Pesa STK Push prompts. Links initiated requests to callbacks.';
+
+create index if not exists idx_mpesa_stk_requests_checkout_request_id
+  on app.mpesa_stk_requests(checkout_request_id)
+  where checkout_request_id is not null;
+
+create index if not exists idx_mpesa_stk_requests_rent_charge_period
+  on app.mpesa_stk_requests(rent_charge_period_id);
 
 create or replace function app.record_mpesa_stk_callback(
   p_payload jsonb

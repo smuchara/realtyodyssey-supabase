@@ -1,9 +1,12 @@
 -- ============================================================================
--- V 1 18: Tenant Summary Real IDs and Invoice Support
+-- V 1 14: Tenant Home Summary and Invoice Support
 -- ============================================================================
 -- Purpose:
---   - Update get_tenant_home_summary to return real rent_charge_period IDs.
---   - Enables mobile app to pass valid UUIDs to STK Push functions.
+--   - Provide tenant home financial summary data from real rent charge periods
+--     when ledger data exists.
+--   - Fall back to pro-rated estimation when billing records are not available.
+--   - Return real invoice ids so the mobile payment flow can pay specific
+--     charge periods when available.
 -- ============================================================================
 
 create or replace function app.get_tenant_home_summary()
@@ -18,12 +21,12 @@ declare
   v_profile record;
   v_residence record;
   v_has_residence boolean := false;
-  
+
   v_days_stayed integer;
   v_daily_rate numeric;
   v_calculated_rent numeric := 0;
   v_has_calculated_rent boolean := false;
-  
+
   v_ledger_arrears numeric := 0;
   v_pending_invoices jsonb := '[]'::jsonb;
 begin
@@ -31,7 +34,6 @@ begin
     raise exception 'Not authenticated';
   end if;
 
-  -- 1. Fetch Profile
   select
     u.id as user_id,
     u.email,
@@ -58,7 +60,6 @@ begin
   where u.id = v_user_id
   limit 1;
 
-  -- 2. Fetch Residence
   select
     t.id as tenancy_id,
     t.property_id,
@@ -114,29 +115,31 @@ begin
 
   v_has_residence := found;
 
-  -- 3. Fetch REAL pending invoices if they exist
   if v_has_residence then
-    select coalesce(jsonb_agg(
-      jsonb_build_object(
-        'id', rcp.id,
-        'type', 'rent',
-        'title', 'Rent for ' || to_char(rcp.billing_period_start, 'Month'),
-        'subtitle', 'Due ' || to_char(rcp.due_on, 'DD/MM/YYYY'),
-        'amount', rcp.outstanding_amount,
-        'currency_code', v_residence.currency_code,
-        'due_date', rcp.due_on,
-        'status', rcp.charge_status::text,
-        'button_label', 'Pay Early',
-        'is_estimated', false
-      )
-    ), '[]'::jsonb)
+    select coalesce(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', rcp.id,
+          'type', 'rent',
+          'title', 'Rent for ' || to_char(rcp.billing_period_start, 'Month'),
+          'subtitle', 'Due ' || to_char(rcp.due_on, 'DD/MM/YYYY'),
+          'amount', rcp.outstanding_amount,
+          'currency_code', v_residence.currency_code,
+          'due_date', rcp.due_on,
+          'status', rcp.charge_status::text,
+          'button_label', 'Pay Early',
+          'is_estimated', false
+        )
+        order by rcp.due_on asc, rcp.billing_period_start asc
+      ),
+      '[]'::jsonb
+    )
     into v_pending_invoices
     from app.rent_charge_periods rcp
     where rcp.unit_id = v_residence.unit_id
       and rcp.charge_status <> 'paid'
       and rcp.deleted_at is null;
 
-    -- Calculate total from ledger
     select coalesce(sum(outstanding_amount), 0)
     into v_ledger_arrears
     from app.rent_charge_periods
@@ -145,19 +148,19 @@ begin
       and deleted_at is null;
   end if;
 
-  -- 4. Hybrid Pro-rated Logic (Keep as fallback if NO ledger data exists)
-  if v_has_residence and jsonb_array_length(v_pending_invoices) = 0 and v_residence.rent_amount > 0 then
+  if v_has_residence
+     and jsonb_array_length(v_pending_invoices) = 0
+     and v_residence.rent_amount > 0 then
     v_days_stayed := (current_date - v_residence.starts_on::date);
-    
+
     if v_days_stayed > 7 then
       v_daily_rate := v_residence.rent_amount / 31.0;
       v_calculated_rent := round(v_daily_rate * v_days_stayed, 2);
       v_has_calculated_rent := true;
-      
-      -- Add pro-rated estimate to "upcoming"
+
       v_pending_invoices := json_build_array(
         jsonb_build_object(
-          'id', null, -- Still no ID for estimates
+          'id', null,
           'type', 'rent',
           'title', 'Pending Rent',
           'subtitle', 'Pro-rated from admission',
@@ -222,7 +225,7 @@ begin
     'financial',
     jsonb_build_object(
       'has_payment_data', v_has_calculated_rent,
-      'message', case 
+      'message', case
         when jsonb_array_length(v_pending_invoices) > 0 then 'Active pending charges found.'
         when v_has_calculated_rent then 'Pro-rated balance calculated.'
         else 'No billing data yet.'
@@ -230,9 +233,12 @@ begin
       'arrears',
       jsonb_build_object(
         'has_overdue', v_calculated_rent > 0,
-        'currency_code', coalesce(v_residence.currency_code, 'KES'),
+        'currency_code', case
+          when v_has_residence then coalesce(v_residence.currency_code, 'KES')
+          else 'KES'
+        end,
         'total_amount', v_calculated_rent,
-        'total_label', case 
+        'total_label', case
           when jsonb_array_length(v_pending_invoices) > 0 then 'Total Outstanding'
           when v_calculated_rent > 0 then 'Outstanding balance (Estimated)'
           when v_days_stayed <= 7 then 'Welcome period (Free)'
