@@ -24,45 +24,73 @@ Deno.serve(async (req: Request) => {
     const body = await parseJsonBody(req);
 
     const {
-      invoiceId, // This is the rent_charge_period_id
+      invoiceId, // Optional: for specific rent charge periods
+      unitId,    // Optional: for advance payments/top-ups
+      amount,    // Required if no invoiceId
       phoneNumber, // Optional: override phone number for STK prompt
     } = body ?? {};
 
-    if (!invoiceId) {
-      return errorResponse("invoiceId is required", 400);
-    }
+    // 1. Resolve logical "Invoice" or "Unit" for payment
+    let targetUnitId = unitId;
+    let targetAmount = amount;
+    let targetInvoiceId = (invoiceId && invoiceId !== "MOCK_INVOICE_ID") ? invoiceId : null;
+    let targetWorkspaceId;
+    let targetPropertyId;
 
     const serviceClient = getServiceRoleClient();
 
-    // 1. Fetch Invoice (Rent Charge Period)
-    const { data: invoice, error: invoiceError } = await serviceClient
-      .from("rent_charge_periods")
-      .select(`
-        id,
-        workspace_id,
-        property_id,
-        unit_id,
-        scheduled_amount,
-        outstanding_amount,
-        charge_status
-      `)
-      .eq("id", invoiceId)
-      .single();
+    if (targetInvoiceId) {
+      // Flow A: Paying a specific invoice
+      const { data: invoice, error: invoiceError } = await serviceClient
+        .from("rent_charge_periods")
+        .select(`
+          id,
+          workspace_id,
+          property_id,
+          unit_id,
+          outstanding_amount,
+          charge_status
+        `)
+        .eq("id", targetInvoiceId)
+        .single();
 
-    if (invoiceError || !invoice) {
-      return errorResponse("Invoice not found", 404);
+      if (invoiceError || !invoice) {
+        return errorResponse(`Invoice not found: ${targetInvoiceId}`, 404);
+      }
+
+      if (invoice.charge_status === "paid") {
+        return errorResponse("Invoice is already paid", 400);
+      }
+
+      targetUnitId = invoice.unit_id;
+      targetAmount = invoice.outstanding_amount;
+      targetWorkspaceId = invoice.workspace_id;
+      targetPropertyId = invoice.property_id;
+    } else {
+      // Flow B: Advance Payment / Unit Top-up
+      if (!targetUnitId || !targetAmount || targetAmount <= 0) {
+        return errorResponse("Valid unitId and amount (> 0) are required for advance payments", 400);
+      }
+
+      const { data: unit, error: unitError } = await serviceClient
+        .from("units")
+        .select("id, property_id, properties!inner(workspace_id)")
+        .eq("id", targetUnitId)
+        .single();
+
+      if (unitError || !unit) {
+        return errorResponse(`Unit not found: ${targetUnitId}`, 404);
+      }
+
+      targetWorkspaceId = unit.properties.workspace_id;
+      targetPropertyId = unit.property_id;
     }
 
-    if (invoice.charge_status === "paid") {
-      return errorResponse("Invoice is already paid", 400);
-    }
-
-    // 2. Fetch Active Payment Setup for the Unit/Property/Workspace
-    // We reuse the RPC logic or just query the setups directly
+    // 2. Fetch Active Payment Setup
     const { data: setup, error: setupError } = await serviceClient
       .schema("app")
       .rpc("get_active_payment_setup_for_tenant", {
-        p_unit_id: invoice.unit_id,
+        p_unit_id: targetUnitId,
       })
       .maybeSingle();
 
@@ -109,12 +137,12 @@ Deno.serve(async (req: Request) => {
     const { data: stkRequest, error: requestError } = await serviceClient
       .from("mpesa_stk_requests")
       .insert({
-        workspace_id: invoice.workspace_id,
-        property_id: invoice.property_id,
-        unit_id: invoice.unit_id,
-        rent_charge_period_id: invoice.id,
+        workspace_id: targetWorkspaceId,
+        property_id: targetPropertyId,
+        unit_id: targetUnitId,
+        rent_charge_period_id: targetInvoiceId,
         payment_collection_setup_id: setup.id,
-        amount: invoice.outstanding_amount,
+        amount: targetAmount,
         phone_number: formattedPhone,
         status: "pending",
       })
@@ -131,10 +159,12 @@ Deno.serve(async (req: Request) => {
       const stkResponse = await initiateStkPush({
         shortCode,
         passKey,
-        amount: invoice.outstanding_amount,
+        amount: targetAmount,
         phoneNumber: formattedPhone,
         accountReference: setup.account_reference_hint || "Rent",
-        transactionDesc: `Rent ${invoice.id.substring(0, 8)}`,
+        transactionDesc: targetInvoiceId 
+          ? `Rent ${targetInvoiceId.substring(0, 8)}`
+          : `Advance Pay ${targetUnitId.substring(0, 8)}`,
         callbackUrl: buildSupabaseFunctionUrl("mpesa-callback"),
         transactionType,
       });
