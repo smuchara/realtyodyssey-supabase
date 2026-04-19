@@ -28,6 +28,7 @@ Deno.serve(async (req: Request) => {
       unitId, // Optional: for advance payments/top-ups
       amount, // Required if no invoiceId
       phoneNumber, // Optional: override phone number for STK prompt
+      paymentSetupId, // Optional: use the exact setup resolved by the client
     } = body ?? {};
 
     // 1. Resolve logical "Invoice" or "Unit" for payment
@@ -102,12 +103,20 @@ Deno.serve(async (req: Request) => {
     }
 
     // 2. Fetch Active Payment Setup
-    const { data: setup, error: setupError } = await serviceClient
-      .schema("app")
-      .rpc("get_active_payment_setup_for_tenant", {
-        p_unit_id: targetUnitId,
-      })
-      .maybeSingle();
+    final setupQuery = paymentSetupId
+      ? await serviceClient
+        .from("payment_collection_setups")
+        .select("*")
+        .eq("id", paymentSetupId)
+        .maybeSingle()
+      : await serviceClient
+        .schema("app")
+        .rpc("get_active_payment_setup_for_tenant", {
+          p_unit_id: targetUnitId,
+        })
+        .maybeSingle();
+
+    const { data: setup, error: setupError } = setupQuery;
 
     if (setupError || !setup) {
       return errorResponse(
@@ -197,7 +206,8 @@ Deno.serve(async (req: Request) => {
         passKey,
         amount: targetAmount,
         phoneNumber: formattedPhone,
-        accountReference: setup.account_reference_hint || "Rent",
+        accountReference:
+          setup.account_reference ?? setup.account_reference_hint ?? "Rent",
         transactionDesc: targetInvoiceId
           ? `Rent ${targetInvoiceId.substring(0, 8)}`
           : `Advance Pay ${targetUnitId.substring(0, 8)}`,
