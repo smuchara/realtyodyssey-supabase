@@ -63,12 +63,21 @@ Deno.serve(async (req: Request) => {
     }
 
     // 2. Map fields from the setup
-    const shortCode = setup.paybill_number ?? setup.till_number;
-    const passKey = Deno.env.get("MPESA_PASSKEY"); // Must be set in Supabase Secrets
+    const shortCode = setup.paybill_number ?? setup.till_number ??
+      setup.paybillNumber ?? setup.tillNumber;
+    const passKey = Deno.env.get("MPESA_PASSKEY");
 
-    if (!shortCode || !passKey) {
+    if (!shortCode) {
+      console.error("Payment setup found but missing shortcode:", setup);
       return errorResponse(
-        "Payment setup is incomplete (missing shortcode or passkey)",
+        "Payment setup is incomplete (missing paybill or till number)",
+        400,
+      );
+    }
+
+    if (!passKey) {
+      return errorResponse(
+        "M-Pesa Passkey is not configured in Supabase Secrets",
         400,
       );
     }
