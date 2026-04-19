@@ -172,6 +172,7 @@ export async function initiateStkPush(input: {
     `${getDarajaBaseUrl()}/mpesa/stkpush/v1/processrequest`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(25000),
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
