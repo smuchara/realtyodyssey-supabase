@@ -33,7 +33,7 @@ Deno.serve(async (req: Request) => {
     // 1. Resolve logical "Invoice" or "Unit" for payment
     let targetUnitId = unitId;
     let targetAmount = amount;
-    let targetInvoiceId = (invoiceId && invoiceId !== "MOCK_INVOICE_ID")
+    const targetInvoiceId = (invoiceId && invoiceId !== "MOCK_INVOICE_ID")
       ? invoiceId
       : null;
     let targetWorkspaceId;
