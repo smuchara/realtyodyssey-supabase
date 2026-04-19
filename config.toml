@@ -35,6 +35,12 @@ verify_jwt = false
 [functions.mpesa-register-c2b]
 verify_jwt = false
 
+[functions.mpesa-stk-push]
+verify_jwt = false
+
+[functions.mpesa-get-payment-setup]
+verify_jwt = false
+
 [functions.daraja-c2b-validation]
 verify_jwt = false
 
