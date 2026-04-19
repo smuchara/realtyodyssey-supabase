@@ -162,9 +162,19 @@ export async function initiateStkPush(input: {
   accountReference: string;
   transactionDesc: string;
   callbackUrl: string;
+  transactionType?: "CustomerPayBillOnline" | "CustomerBuyGoodsOnline";
 }): Promise<StkPushResult> {
-  const timestamp =
-    new Date().toISOString().replace(/[-:T]/g, "").split(".")[0];
+  // Daraja expects YYYYMMDDHHMMSS format
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
+
   const password = getDarajaPassword(input.shortCode, input.passKey, timestamp);
   const accessToken = await getDarajaAccessToken();
 
@@ -181,14 +191,16 @@ export async function initiateStkPush(input: {
         BusinessShortCode: input.shortCode,
         Password: password,
         Timestamp: timestamp,
-        TransactionType: "CustomerPayBillOnline",
+        TransactionType: input.transactionType ?? "CustomerPayBillOnline",
         Amount: Math.round(input.amount),
         PartyA: input.phoneNumber,
         PartyB: input.shortCode,
         PhoneNumber: input.phoneNumber,
         CallBackURL: input.callbackUrl,
-        AccountReference: input.accountReference.substring(0, 12),
-        TransactionDesc: input.transactionDesc.substring(0, 13),
+        AccountReference: input.accountReference.substring(0, 12).trim() ||
+          "Rent",
+        TransactionDesc: input.transactionDesc.substring(0, 13).trim() ||
+          "Payment",
       }),
     },
   );
