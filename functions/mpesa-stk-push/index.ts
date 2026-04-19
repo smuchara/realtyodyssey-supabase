@@ -63,7 +63,8 @@ Deno.serve(async (req: Request) => {
     }
 
     // 2. Map fields from the setup
-    const shortCode = setup.paybill_number ?? setup.till_number ?? setup.paybillNumber ?? setup.tillNumber;
+    const shortCode = setup.paybill_number ?? setup.till_number ??
+      setup.paybillNumber ?? setup.tillNumber;
     const passKey = Deno.env.get("MPESA_PASSKEY");
 
     if (!shortCode) {
