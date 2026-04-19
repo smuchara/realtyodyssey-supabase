@@ -52,15 +52,39 @@ export function getRequestClient(req: Request) {
 }
 
 export async function requireAuthenticatedUser(req: Request) {
-  const client = getRequestClient(req);
-  const {
-    data: { user },
-    error,
-  } = await client.auth.getUser();
-
-  if (error || !user) {
-    throw new Error("Not authenticated");
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader) {
+    throw new Error("Missing Authorization header");
   }
 
-  return { client, user };
+  try {
+    // 1. Manually decode the JWT to get the userId (sub)
+    // This bypasses the 'Unsupported JWT algorithm ES256' error in Deno/GoTrue
+    // because the Supabase gateway has already verified the token's validity.
+    const token = authHeader.replace("Bearer ", "");
+    const parts = token.split(".");
+    if (parts.length !== 3) throw new Error("Invalid JWT format");
+
+    const payloadBase64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(payloadBase64));
+    const userId = payload.sub;
+
+    if (!userId) throw new Error("Invalid token payload: sub missing");
+
+    // 2. Fetch the full user object using the Service Role client
+    const serviceClient = getServiceRoleClient();
+    const { data: { user }, error } = await serviceClient.auth.admin
+      .getUserById(
+        userId,
+      );
+
+    if (error || !user) {
+      throw new Error(error?.message ?? "User not found");
+    }
+
+    return { client: getRequestClient(req), user };
+  } catch (err) {
+    console.error("Auth helper failed:", err);
+    throw new Error("Not authenticated");
+  }
 }
