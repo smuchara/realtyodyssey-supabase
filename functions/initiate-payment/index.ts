@@ -140,6 +140,24 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const configuredReference = [
+      setup.account_reference,
+      setup.account_reference_hint,
+      setup.display_name,
+      setup.account_name,
+      setup.paybill_number,
+      setup.till_number,
+      setup.send_money_phone_number,
+    ].find((value) => typeof value === "string" && value.trim().length > 0)
+      ?.trim() ?? "Rent";
+
+    const configuredDescription = [
+      setup.display_name,
+      setup.account_name,
+      targetInvoiceId ? "Rent Payment" : "Advance Payment",
+    ].find((value) => typeof value === "string" && value.trim().length > 0)
+      ?.trim() ?? "Payment";
+
     // 4. Resolve and Normalize Phone Number
     let rawPhone = phoneNumber || user.phone ||
       user.user_metadata?.phone;
@@ -206,11 +224,8 @@ Deno.serve(async (req: Request) => {
         passKey,
         amount: targetAmount,
         phoneNumber: formattedPhone,
-        accountReference: setup.account_reference ??
-          setup.account_reference_hint ?? "Rent",
-        transactionDesc: targetInvoiceId
-          ? `Rent ${targetInvoiceId.substring(0, 8)}`
-          : `Advance Pay ${targetUnitId.substring(0, 8)}`,
+        accountReference: configuredReference,
+        transactionDesc: configuredDescription,
         callbackUrl: buildSupabaseFunctionUrl("mpesa-callback"),
         transactionType,
       });
