@@ -1,10 +1,5 @@
-// @ts-nocheck: Deno globals not recognized in some IDE environments
-import {
-  jsonResponse,
-} from "../_shared/http.ts";
-import {
-  getServiceRoleClient,
-} from "../_shared/supabase.ts";
+import { jsonResponse } from "../_shared/http.ts";
+import { getServiceRoleClient } from "../_shared/supabase.ts";
 
 Deno.serve(async (req: Request) => {
   // Daraja callbacks are POST
@@ -14,7 +9,10 @@ Deno.serve(async (req: Request) => {
 
   try {
     const payload = await req.json();
-    console.log("M-Pesa STK Callback Received:", JSON.stringify(payload, null, 2));
+    console.log(
+      "M-Pesa STK Callback Received:",
+      JSON.stringify(payload, null, 2),
+    );
 
     const serviceClient = getServiceRoleClient();
 
@@ -30,9 +28,12 @@ Deno.serve(async (req: Request) => {
 
     if (error) {
       console.error("Error processing M-Pesa callback:", error);
-      // We still return 200 to Safaricom to stop retries, 
+      // We still return 200 to Safaricom to stop retries,
       // but we log the error for internal debugging.
-      return jsonResponse({ ResultCode: 0, ResultDesc: "Accepted with processing error" });
+      return jsonResponse({
+        ResultCode: 0,
+        ResultDesc: "Accepted with processing error",
+      });
     }
 
     console.log("M-Pesa callback processed successfully:", data);
@@ -40,12 +41,14 @@ Deno.serve(async (req: Request) => {
     // Daraja expects a specific response format
     return jsonResponse({
       ResultCode: 0,
-      ResultDesc: "Success"
+      ResultDesc: "Success",
     });
-
   } catch (error) {
     console.error("M-Pesa Callback Critical Failure:", error);
     // Always return 200 to Safaricom unless you want them to retry (which is risky if partially processed)
-    return jsonResponse({ ResultCode: 0, ResultDesc: "Accepted with critical error" });
+    return jsonResponse({
+      ResultCode: 0,
+      ResultDesc: "Accepted with critical error",
+    });
   }
 });

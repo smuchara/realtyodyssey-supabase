@@ -61,26 +61,36 @@ Deno.serve(async (req: Request) => {
     // We reuse the RPC logic or just query the setups directly
     const { data: setup, error: setupError } = await serviceClient
       .schema("app")
-      .rpc("get_active_payment_setup_for_tenant", { p_unit_id: invoice.unit_id })
+      .rpc("get_active_payment_setup_for_tenant", {
+        p_unit_id: invoice.unit_id,
+      })
       .maybeSingle();
 
     if (setupError || !setup) {
-      return errorResponse("No active payment methods found for this property", 404);
+      return errorResponse(
+        "No active payment methods found for this property",
+        404,
+      );
     }
 
     // 3. Resolve Credentials and Transaction Type
     const shortCode = setup.paybill_number ?? setup.till_number;
-    const passKey = setup.metadata?.mpesa_passkey ?? Deno.env.get("MPESA_PASSKEY");
-    const transactionType = setup.payment_method_type === "mpesa_paybill" 
-      ? "CustomerPayBillOnline" 
+    const passKey = setup.metadata?.mpesa_passkey ??
+      Deno.env.get("MPESA_PASSKEY");
+    const transactionType = setup.payment_method_type === "mpesa_paybill"
+      ? "CustomerPayBillOnline"
       : "CustomerBuyGoodsOnline";
 
     if (!shortCode || !passKey) {
-      return errorResponse("Payment setup is incomplete (missing shortcode or passkey)", 500);
+      return errorResponse(
+        "Payment setup is incomplete (missing shortcode or passkey)",
+        500,
+      );
     }
 
     // 4. Normalize Phone Number
-    let formattedPhone = phoneNumber || user.phone || user.user_metadata?.phone || "";
+    let formattedPhone = phoneNumber || user.phone ||
+      user.user_metadata?.phone || "";
     formattedPhone = formattedPhone.toString().replace(/[\s\-\+]/g, "");
     if (formattedPhone.startsWith("0")) {
       formattedPhone = "254" + formattedPhone.substring(1);
@@ -89,7 +99,10 @@ Deno.serve(async (req: Request) => {
     }
 
     if (formattedPhone.length !== 12) {
-      return errorResponse("Invalid phone number format. Use 254XXXXXXXXX", 400);
+      return errorResponse(
+        "Invalid phone number format. Use 254XXXXXXXXX",
+        400,
+      );
     }
 
     // 5. Pre-persist STK Request (Status: PENDING)
@@ -103,7 +116,7 @@ Deno.serve(async (req: Request) => {
         payment_collection_setup_id: setup.id,
         amount: invoice.outstanding_amount,
         phone_number: formattedPhone,
-        status: "pending"
+        status: "pending",
       })
       .select()
       .single();
@@ -131,33 +144,32 @@ Deno.serve(async (req: Request) => {
         .from("mpesa_stk_requests")
         .update({
           checkout_request_id: stkResponse.CheckoutRequestID,
-          merchant_request_id: stkResponse.MerchantRequestID
+          merchant_request_id: stkResponse.MerchantRequestID,
         })
         .eq("id", stkRequest.id);
 
       return jsonResponse({
         success: true,
         checkoutRequestId: stkResponse.CheckoutRequestID,
-        customerMessage: stkResponse.CustomerMessage || "Please enter your M-Pesa PIN on your phone."
+        customerMessage: stkResponse.CustomerMessage ||
+          "Please enter your M-Pesa PIN on your phone.",
       });
-
     } catch (darajaError) {
       // Mark as failed if Daraja rejects immediately
       await serviceClient
         .from("mpesa_stk_requests")
         .update({
           status: "failed",
-          result_desc: darajaError.message
+          result_desc: darajaError.message,
         })
         .eq("id", stkRequest.id);
 
       return errorResponse(darajaError.message, 500);
     }
-
   } catch (error) {
     return errorResponse(
       error instanceof Error ? error.message : "Internal Server Error",
-      500
+      500,
     );
   }
 });

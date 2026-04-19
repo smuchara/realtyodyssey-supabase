@@ -197,8 +197,10 @@ export async function initiateStkPush(input: {
         PartyB: input.shortCode,
         PhoneNumber: input.phoneNumber,
         CallBackURL: input.callbackUrl,
-        AccountReference: input.accountReference.substring(0, 12).trim() || "Rent",
-        TransactionDesc: input.transactionDesc.substring(0, 13).trim() || "Payment",
+        AccountReference: input.accountReference.substring(0, 12).trim() ||
+          "Rent",
+        TransactionDesc: input.transactionDesc.substring(0, 13).trim() ||
+          "Payment",
       }),
     },
   );
