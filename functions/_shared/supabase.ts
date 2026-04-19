@@ -73,9 +73,10 @@ export async function requireAuthenticatedUser(req: Request) {
 
     // 2. Fetch the full user object using the Service Role client
     const serviceClient = getServiceRoleClient();
-    const { data: { user }, error } = await serviceClient.auth.admin.getUserById(
-      userId,
-    );
+    const { data: { user }, error } = await serviceClient.auth.admin
+      .getUserById(
+        userId,
+      );
 
     if (error || !user) {
       throw new Error(error?.message ?? "User not found");
