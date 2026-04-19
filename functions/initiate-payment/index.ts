@@ -25,15 +25,17 @@ Deno.serve(async (req: Request) => {
 
     const {
       invoiceId, // Optional: for specific rent charge periods
-      unitId,    // Optional: for advance payments/top-ups
-      amount,    // Required if no invoiceId
+      unitId, // Optional: for advance payments/top-ups
+      amount, // Required if no invoiceId
       phoneNumber, // Optional: override phone number for STK prompt
     } = body ?? {};
 
     // 1. Resolve logical "Invoice" or "Unit" for payment
     let targetUnitId = unitId;
     let targetAmount = amount;
-    let targetInvoiceId = (invoiceId && invoiceId !== "MOCK_INVOICE_ID") ? invoiceId : null;
+    let targetInvoiceId = (invoiceId && invoiceId !== "MOCK_INVOICE_ID")
+      ? invoiceId
+      : null;
     let targetWorkspaceId;
     let targetPropertyId;
 
@@ -69,7 +71,10 @@ Deno.serve(async (req: Request) => {
     } else {
       // Flow B: Advance Payment / Unit Top-up
       if (!targetUnitId || !targetAmount || targetAmount <= 0) {
-        return errorResponse("Valid unitId and amount (> 0) are required for advance payments", 400);
+        return errorResponse(
+          "Valid unitId and amount (> 0) are required for advance payments",
+          400,
+        );
       }
 
       const { data: unit, error: unitError } = await serviceClient
@@ -162,7 +167,7 @@ Deno.serve(async (req: Request) => {
         amount: targetAmount,
         phoneNumber: formattedPhone,
         accountReference: setup.account_reference_hint || "Rent",
-        transactionDesc: targetInvoiceId 
+        transactionDesc: targetInvoiceId
           ? `Rent ${targetInvoiceId.substring(0, 8)}`
           : `Advance Pay ${targetUnitId.substring(0, 8)}`,
         callbackUrl: buildSupabaseFunctionUrl("mpesa-callback"),
