@@ -103,7 +103,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // 2. Fetch Active Payment Setup
-    final setupQuery = paymentSetupId
+    const setupQuery = paymentSetupId
       ? await serviceClient
         .from("payment_collection_setups")
         .select("*")
