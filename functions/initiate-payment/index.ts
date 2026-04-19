@@ -39,6 +39,13 @@ Deno.serve(async (req: Request) => {
     let targetWorkspaceId;
     let targetPropertyId;
 
+    if (!targetUnitId && !targetInvoiceId) {
+      return errorResponse(
+        "Missing identification: either invoiceId or unitId must be provided",
+        400,
+      );
+    }
+
     const serviceClient = getServiceRoleClient();
 
     if (targetInvoiceId) {
@@ -70,9 +77,12 @@ Deno.serve(async (req: Request) => {
       targetPropertyId = invoice.property_id;
     } else {
       // Flow B: Advance Payment / Unit Top-up
-      if (!targetUnitId || !targetAmount || targetAmount <= 0) {
+      if (!targetUnitId) {
+        return errorResponse("unitId is required for advance payments", 400);
+      }
+      if (!targetAmount || targetAmount <= 0) {
         return errorResponse(
-          "Valid unitId and amount (> 0) are required for advance payments",
+          `Valid amount (> 0) is required for advance payments. Received: ${targetAmount}`,
           400,
         );
       }
@@ -121,10 +131,31 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // 4. Normalize Phone Number
-    let formattedPhone = phoneNumber || user.phone ||
-      user.user_metadata?.phone || "";
-    formattedPhone = formattedPhone.toString().replace(/[\s\-\+]/g, "");
+    // 4. Resolve and Normalize Phone Number
+    let rawPhone = phoneNumber || user.phone ||
+      user.user_metadata?.phone;
+
+    // Fallback: If no phone in Auth/Body, try Unit Snapshot
+    if (!rawPhone && targetUnitId) {
+      const { data: snapshot } = await serviceClient
+        .from("unit_occupancy_snapshots")
+        .select("current_tenant_phone")
+        .eq("unit_id", targetUnitId)
+        .maybeSingle();
+
+      if (snapshot?.current_tenant_phone) {
+        rawPhone = snapshot.current_tenant_phone;
+      }
+    }
+
+    if (!rawPhone) {
+      return errorResponse(
+        "Phone number not found. Please provide a phoneNumber in the request or update your profile.",
+        400,
+      );
+    }
+
+    let formattedPhone = rawPhone.toString().replace(/[\s\-\+]/g, "");
     if (formattedPhone.startsWith("0")) {
       formattedPhone = "254" + formattedPhone.substring(1);
     } else if (!formattedPhone.startsWith("254")) {
@@ -133,7 +164,7 @@ Deno.serve(async (req: Request) => {
 
     if (formattedPhone.length !== 12) {
       return errorResponse(
-        "Invalid phone number format. Use 254XXXXXXXXX",
+        `Invalid phone number format: ${formattedPhone}. Expected 254XXXXXXXXX (12 digits)`,
         400,
       );
     }
