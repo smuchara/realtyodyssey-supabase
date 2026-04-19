@@ -38,6 +38,12 @@ verify_jwt = false
 [functions.mpesa-stk-push]
 verify_jwt = false
 
+[functions.initiate-payment]
+verify_jwt = false
+
+[functions.mpesa-callback]
+verify_jwt = false
+
 [functions.mpesa-get-payment-setup]
 verify_jwt = false
 
