@@ -120,11 +120,11 @@ begin
       jsonb_build_object(
         'id', rcp.id,
         'type', 'rent',
-        'title', 'Rent for ' || to_char(rcp.period_start, 'Month'),
-        'subtitle', 'Due ' || to_char(rcp.due_date, 'DD/MM/YYYY'),
+        'title', 'Rent for ' || to_char(rcp.billing_period_start, 'Month'),
+        'subtitle', 'Due ' || to_char(rcp.due_on, 'DD/MM/YYYY'),
         'amount', rcp.outstanding_amount,
         'currency_code', v_residence.currency_code,
-        'due_date', rcp.due_date,
+        'due_date', rcp.due_on,
         'status', rcp.charge_status::text,
         'button_label', 'Pay Early',
         'is_estimated', false
