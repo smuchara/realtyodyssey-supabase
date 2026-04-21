@@ -32,6 +32,9 @@ verify_enabled = true
 [functions.mpesa-create-setup]
 verify_jwt = false
 
+[functions.payment-create-setup]
+verify_jwt = false
+
 [functions.mpesa-register-c2b]
 verify_jwt = false
 

@@ -85,6 +85,8 @@ create table if not exists app.lease_agreements (
   start_date date not null,
   end_date date,
   billing_cycle app.lease_billing_cycle_enum not null default 'monthly',
+  rent_due_day_of_month integer not null default 5,
+  collection_grace_period_days integer not null default 2,
   rent_amount numeric(12, 2) not null,
   currency_code text not null default 'KES',
   status app.lease_agreement_status_enum not null default 'draft',
@@ -99,6 +101,10 @@ create table if not exists app.lease_agreements (
   constraint uq_lease_agreements_chain_version unique (lease_chain_id, version_no),
   constraint chk_lease_agreements_version_no check (version_no > 0),
   constraint chk_lease_agreements_rent_amount check (rent_amount >= 0),
+  constraint chk_lease_agreements_rent_due_day_of_month
+    check (rent_due_day_of_month between 1 and 28),
+  constraint chk_lease_agreements_collection_grace_period_days
+    check (collection_grace_period_days between 0 and 14),
   constraint chk_lease_agreements_currency_code check (char_length(trim(currency_code)) = 3),
   constraint chk_lease_agreements_tenant_phone_len
     check (tenant_phone is null or char_length(trim(tenant_phone)) between 7 and 32),
@@ -392,6 +398,51 @@ as $$
     when 'semi_annual' then round((coalesce(p_amount, 0) / 6.0)::numeric, 2)
     when 'annual' then round((coalesce(p_amount, 0) / 12.0)::numeric, 2)
   end;
+$$;
+
+create or replace function app.get_rent_due_date_for_period(
+  p_billing_period_start date,
+  p_due_day_of_month integer default 5
+)
+returns date
+language sql
+immutable
+security definer
+set search_path = app, public
+as $$
+  with month_bounds as (
+    select
+      date_trunc('month', p_billing_period_start)::date as month_start,
+      (
+        date_trunc('month', p_billing_period_start)
+        + interval '1 month - 1 day'
+      )::date as month_end
+  )
+  select least(
+    month_end,
+    (
+      month_start
+      + make_interval(days => greatest(coalesce(p_due_day_of_month, 5), 1) - 1)
+    )::date
+  )
+  from month_bounds;
+$$;
+
+create or replace function app.get_rent_collection_deadline_for_period(
+  p_billing_period_start date,
+  p_due_day_of_month integer default 5,
+  p_grace_period_days integer default 2
+)
+returns date
+language sql
+immutable
+security definer
+set search_path = app, public
+as $$
+  select (
+    app.get_rent_due_date_for_period(p_billing_period_start, p_due_day_of_month)
+    + greatest(coalesce(p_grace_period_days, 0), 0)
+  )::date;
 $$;
 
 create or replace function app.get_effective_lease_status(
@@ -1144,6 +1195,8 @@ create or replace function app.create_tenant_invitation(
   p_rent_amount numeric default 0,
   p_notes text default null,
   p_billing_cycle app.lease_billing_cycle_enum default 'monthly',
+  p_rent_due_day_of_month integer default 5,
+  p_collection_grace_period_days integer default 2,
   p_currency_code text default 'KES',
   p_expires_in_days integer default 7
 )
@@ -1186,6 +1239,12 @@ begin
   end if;
   if p_rent_amount is null or p_rent_amount < 0 then
     raise exception 'Rent amount must be zero or greater';
+  end if;
+  if p_rent_due_day_of_month is null or p_rent_due_day_of_month < 1 or p_rent_due_day_of_month > 28 then
+    raise exception 'Rent due day must be between 1 and 28';
+  end if;
+  if p_collection_grace_period_days is null or p_collection_grace_period_days < 0 or p_collection_grace_period_days > 14 then
+    raise exception 'Collection grace period must be between 0 and 14 days';
   end if;
 
   select
@@ -1265,7 +1324,8 @@ begin
 
   insert into app.lease_agreements (
     property_id, unit_id, tenant_name, tenant_phone, entered_by_user_id, lease_type,
-    start_date, end_date, billing_cycle, rent_amount, currency_code, status,
+    start_date, end_date, billing_cycle, rent_due_day_of_month, collection_grace_period_days,
+    rent_amount, currency_code, status,
     confirmation_status, agreement_notes, terms_snapshot
   )
   values (
@@ -1278,6 +1338,8 @@ begin
     p_start_date,
     p_end_date,
     coalesce(p_billing_cycle, 'monthly'),
+    p_rent_due_day_of_month,
+    p_collection_grace_period_days,
     p_rent_amount,
     v_currency_code,
     'pending_confirmation',
@@ -1289,6 +1351,13 @@ begin
       'expected_rate_at_capture', v_unit.expected_rate,
       'unit_label', v_unit.unit_label,
       'property_name', v_unit.property_name,
+      'rent_due_day_of_month', p_rent_due_day_of_month,
+      'collection_grace_period_days', p_collection_grace_period_days,
+      'collection_policy_label', format(
+        'Rent due by the %s with collection follow-up through day %s of the month.',
+        p_rent_due_day_of_month,
+        p_rent_due_day_of_month + p_collection_grace_period_days
+      ),
       'delivery_channel', p_delivery_channel::text,
       'tenant_email', v_tenant_email
     )
@@ -1320,6 +1389,8 @@ begin
       'rent_amount', p_rent_amount,
       'currency_code', v_currency_code,
       'billing_cycle', coalesce(p_billing_cycle, 'monthly')::text,
+      'rent_due_day_of_month', p_rent_due_day_of_month,
+      'collection_grace_period_days', p_collection_grace_period_days,
       'notes', v_notes
     )
   )
@@ -1341,6 +1412,8 @@ begin
         'lease_agreement_id', v_lease_id,
         'lease_type', p_lease_type::text,
         'billing_cycle', coalesce(p_billing_cycle, 'monthly')::text,
+        'rent_due_day_of_month', p_rent_due_day_of_month,
+        'collection_grace_period_days', p_collection_grace_period_days,
         'rent_amount', p_rent_amount,
         'currency_code', v_currency_code
       )
@@ -2649,6 +2722,8 @@ revoke all on function app.create_tenant_invitation(
   numeric,
   text,
   app.lease_billing_cycle_enum,
+  integer,
+  integer,
   text,
   integer
 ) from public, anon, authenticated;
@@ -2673,6 +2748,8 @@ grant execute on function app.create_tenant_invitation(
   numeric,
   text,
   app.lease_billing_cycle_enum,
+  integer,
+  integer,
   text,
   integer
 ) to authenticated;

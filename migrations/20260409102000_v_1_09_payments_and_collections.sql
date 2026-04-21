@@ -346,6 +346,9 @@ declare
   v_lease_unit_id uuid;
   v_lease_property_id uuid;
   v_lease_currency_code text;
+  v_lease_rent_due_day_of_month integer;
+  v_lease_collection_grace_period_days integer;
+  v_collection_deadline date;
   v_tenancy_unit_id uuid;
 begin
   select u.property_id, p.workspace_id
@@ -364,8 +367,18 @@ begin
   new.property_id := v_property_id;
   new.workspace_id := v_workspace_id;
 
-  select l.unit_id, l.property_id, l.currency_code
-    into v_lease_unit_id, v_lease_property_id, v_lease_currency_code
+  select
+    l.unit_id,
+    l.property_id,
+    l.currency_code,
+    l.rent_due_day_of_month,
+    l.collection_grace_period_days
+    into
+      v_lease_unit_id,
+      v_lease_property_id,
+      v_lease_currency_code,
+      v_lease_rent_due_day_of_month,
+      v_lease_collection_grace_period_days
   from app.lease_agreements l
   where l.id = new.lease_agreement_id
   limit 1;
@@ -393,6 +406,17 @@ begin
   end if;
 
   new.currency_code := coalesce(nullif(trim(new.currency_code), ''), v_lease_currency_code, 'KES');
+  new.due_on := coalesce(
+    new.due_on,
+    app.get_rent_due_date_for_period(
+      new.billing_period_start,
+      coalesce(v_lease_rent_due_day_of_month, 5)
+    )
+  );
+  v_collection_deadline := (
+    new.due_on
+    + greatest(coalesce(v_lease_collection_grace_period_days, 0), 0)
+  )::date;
   new.amount_paid := greatest(coalesce(new.amount_paid, 0), 0);
   new.outstanding_amount := greatest(coalesce(new.scheduled_amount, 0) - new.amount_paid, 0);
 
@@ -400,13 +424,16 @@ begin
     if new.amount_paid >= new.scheduled_amount and new.scheduled_amount > 0 then
       new.charge_status := 'paid';
       new.fully_paid_at := coalesce(new.fully_paid_at, now());
-      new.full_collection_delay_days := coalesce(new.full_collection_delay_days, (new.fully_paid_at::date - new.due_on));
+      new.full_collection_delay_days := coalesce(
+        new.full_collection_delay_days,
+        (new.fully_paid_at::date - v_collection_deadline)
+      );
     elsif new.amount_paid > 0 then
-      new.charge_status := case when new.due_on < current_date then 'overdue' else 'partially_paid' end;
+      new.charge_status := case when v_collection_deadline < current_date then 'overdue' else 'partially_paid' end;
       new.fully_paid_at := null;
       new.full_collection_delay_days := null;
     else
-      new.charge_status := case when new.due_on < current_date then 'overdue' else 'scheduled' end;
+      new.charge_status := case when v_collection_deadline < current_date then 'overdue' else 'scheduled' end;
       new.fully_paid_at := null;
       new.full_collection_delay_days := null;
     end if;
@@ -764,6 +791,8 @@ set search_path = app, public
 as $$
 declare
   v_total_allocated numeric(12,2);
+  v_allocated_unit_id uuid;
+  v_allocated_lease_agreement_id uuid;
 begin
   select coalesce(sum(pa.allocated_amount), 0)::numeric(12,2)
     into v_total_allocated
@@ -771,8 +800,21 @@ begin
   where pa.payment_record_id = p_payment_record_id
     and pa.deleted_at is null;
 
+  select
+    case when count(distinct rc.unit_id) = 1 then max(rc.unit_id) else null end,
+    case when count(distinct rc.lease_agreement_id) = 1 then max(rc.lease_agreement_id) else null end
+    into v_allocated_unit_id, v_allocated_lease_agreement_id
+  from app.payment_allocations pa
+  join app.rent_charge_periods rc
+    on rc.id = pa.rent_charge_period_id
+   and rc.deleted_at is null
+  where pa.payment_record_id = p_payment_record_id
+    and pa.deleted_at is null;
+
   update app.payment_records pr
      set allocated_amount = v_total_allocated,
+         unit_id = coalesce(pr.unit_id, v_allocated_unit_id),
+         lease_agreement_id = coalesce(pr.lease_agreement_id, v_allocated_lease_agreement_id),
          allocation_status = case
            when v_total_allocated <= 0 then 'unapplied'::app.payment_allocation_status_enum
            when v_total_allocated < pr.amount then 'partially_applied'::app.payment_allocation_status_enum
@@ -793,7 +835,16 @@ as $$
 declare
   v_total_paid numeric(12,2);
   v_last_payment_at timestamptz;
+  v_collection_grace_period_days integer := 0;
 begin
+  select coalesce(la.collection_grace_period_days, 0)
+    into v_collection_grace_period_days
+  from app.rent_charge_periods rc
+  left join app.lease_agreements la
+    on la.id = rc.lease_agreement_id
+  where rc.id = p_rent_charge_period_id
+  limit 1;
+
   select
     coalesce(sum(pa.allocated_amount), 0)::numeric(12,2),
     max(pr.paid_at)
@@ -818,15 +869,21 @@ begin
          full_collection_delay_days = case
            when rc.charge_status = 'cancelled' then rc.full_collection_delay_days
            when v_total_paid >= rc.scheduled_amount and rc.scheduled_amount > 0 and v_last_payment_at is not null
-             then (v_last_payment_at::date - rc.due_on)
+             then (
+               v_last_payment_at::date
+               - (rc.due_on + greatest(coalesce(v_collection_grace_period_days, 0), 0))
+             )
            else null
          end,
          charge_status = case
            when rc.charge_status = 'cancelled' then 'cancelled'::app.rent_charge_status_enum
            when v_total_paid >= rc.scheduled_amount and rc.scheduled_amount > 0 then 'paid'::app.rent_charge_status_enum
-           when v_total_paid > 0 and rc.due_on < current_date then 'overdue'::app.rent_charge_status_enum
+           when v_total_paid > 0
+             and (rc.due_on + greatest(coalesce(v_collection_grace_period_days, 0), 0)) < current_date
+             then 'overdue'::app.rent_charge_status_enum
            when v_total_paid > 0 then 'partially_paid'::app.rent_charge_status_enum
-           when rc.due_on < current_date then 'overdue'::app.rent_charge_status_enum
+           when (rc.due_on + greatest(coalesce(v_collection_grace_period_days, 0), 0)) < current_date
+             then 'overdue'::app.rent_charge_status_enum
            else 'scheduled'::app.rent_charge_status_enum
          end
    where rc.id = p_rent_charge_period_id;
@@ -844,6 +901,7 @@ declare
   v_charge record;
   v_existing_payment_total numeric(12,2);
   v_existing_charge_total numeric(12,2);
+  v_existing_allocated_unit_id uuid;
 begin
   select pr.id, pr.workspace_id, pr.property_id, pr.unit_id, pr.amount, pr.recorded_status
     into v_payment
@@ -880,6 +938,20 @@ begin
   end if;
   if v_payment.unit_id is not null and v_payment.unit_id <> v_charge.unit_id then
     raise exception 'Unit-scoped payment record cannot be allocated to another unit';
+  end if;
+
+  select max(rc.unit_id)
+    into v_existing_allocated_unit_id
+  from app.payment_allocations pa
+  join app.rent_charge_periods rc
+    on rc.id = pa.rent_charge_period_id
+   and rc.deleted_at is null
+  where pa.payment_record_id = new.payment_record_id
+    and pa.deleted_at is null
+    and (tg_op <> 'UPDATE' or pa.id <> new.id);
+
+  if v_existing_allocated_unit_id is not null and v_existing_allocated_unit_id <> v_charge.unit_id then
+    raise exception 'A payment record can only be allocated to one unit';
   end if;
 
   select coalesce(sum(pa.allocated_amount), 0)::numeric(12,2)
