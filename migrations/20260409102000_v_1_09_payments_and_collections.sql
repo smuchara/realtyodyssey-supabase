@@ -791,6 +791,8 @@ set search_path = app, public
 as $$
 declare
   v_total_allocated numeric(12,2);
+  v_allocated_unit_id uuid;
+  v_allocated_lease_agreement_id uuid;
 begin
   select coalesce(sum(pa.allocated_amount), 0)::numeric(12,2)
     into v_total_allocated
@@ -798,8 +800,21 @@ begin
   where pa.payment_record_id = p_payment_record_id
     and pa.deleted_at is null;
 
+  select
+    case when count(distinct rc.unit_id) = 1 then max(rc.unit_id) else null end,
+    case when count(distinct rc.lease_agreement_id) = 1 then max(rc.lease_agreement_id) else null end
+    into v_allocated_unit_id, v_allocated_lease_agreement_id
+  from app.payment_allocations pa
+  join app.rent_charge_periods rc
+    on rc.id = pa.rent_charge_period_id
+   and rc.deleted_at is null
+  where pa.payment_record_id = p_payment_record_id
+    and pa.deleted_at is null;
+
   update app.payment_records pr
      set allocated_amount = v_total_allocated,
+         unit_id = coalesce(pr.unit_id, v_allocated_unit_id),
+         lease_agreement_id = coalesce(pr.lease_agreement_id, v_allocated_lease_agreement_id),
          allocation_status = case
            when v_total_allocated <= 0 then 'unapplied'::app.payment_allocation_status_enum
            when v_total_allocated < pr.amount then 'partially_applied'::app.payment_allocation_status_enum
@@ -886,6 +901,7 @@ declare
   v_charge record;
   v_existing_payment_total numeric(12,2);
   v_existing_charge_total numeric(12,2);
+  v_existing_allocated_unit_id uuid;
 begin
   select pr.id, pr.workspace_id, pr.property_id, pr.unit_id, pr.amount, pr.recorded_status
     into v_payment
@@ -922,6 +938,20 @@ begin
   end if;
   if v_payment.unit_id is not null and v_payment.unit_id <> v_charge.unit_id then
     raise exception 'Unit-scoped payment record cannot be allocated to another unit';
+  end if;
+
+  select max(rc.unit_id)
+    into v_existing_allocated_unit_id
+  from app.payment_allocations pa
+  join app.rent_charge_periods rc
+    on rc.id = pa.rent_charge_period_id
+   and rc.deleted_at is null
+  where pa.payment_record_id = new.payment_record_id
+    and pa.deleted_at is null
+    and (tg_op <> 'UPDATE' or pa.id <> new.id);
+
+  if v_existing_allocated_unit_id is not null and v_existing_allocated_unit_id <> v_charge.unit_id then
+    raise exception 'A payment record can only be allocated to one unit';
   end if;
 
   select coalesce(sum(pa.allocated_amount), 0)::numeric(12,2)
