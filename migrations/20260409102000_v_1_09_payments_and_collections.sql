@@ -346,6 +346,9 @@ declare
   v_lease_unit_id uuid;
   v_lease_property_id uuid;
   v_lease_currency_code text;
+  v_lease_rent_due_day_of_month integer;
+  v_lease_collection_grace_period_days integer;
+  v_collection_deadline date;
   v_tenancy_unit_id uuid;
 begin
   select u.property_id, p.workspace_id
@@ -364,8 +367,18 @@ begin
   new.property_id := v_property_id;
   new.workspace_id := v_workspace_id;
 
-  select l.unit_id, l.property_id, l.currency_code
-    into v_lease_unit_id, v_lease_property_id, v_lease_currency_code
+  select
+    l.unit_id,
+    l.property_id,
+    l.currency_code,
+    l.rent_due_day_of_month,
+    l.collection_grace_period_days
+    into
+      v_lease_unit_id,
+      v_lease_property_id,
+      v_lease_currency_code,
+      v_lease_rent_due_day_of_month,
+      v_lease_collection_grace_period_days
   from app.lease_agreements l
   where l.id = new.lease_agreement_id
   limit 1;
@@ -393,6 +406,17 @@ begin
   end if;
 
   new.currency_code := coalesce(nullif(trim(new.currency_code), ''), v_lease_currency_code, 'KES');
+  new.due_on := coalesce(
+    new.due_on,
+    app.get_rent_due_date_for_period(
+      new.billing_period_start,
+      coalesce(v_lease_rent_due_day_of_month, 5)
+    )
+  );
+  v_collection_deadline := (
+    new.due_on
+    + greatest(coalesce(v_lease_collection_grace_period_days, 0), 0)
+  )::date;
   new.amount_paid := greatest(coalesce(new.amount_paid, 0), 0);
   new.outstanding_amount := greatest(coalesce(new.scheduled_amount, 0) - new.amount_paid, 0);
 
@@ -400,13 +424,16 @@ begin
     if new.amount_paid >= new.scheduled_amount and new.scheduled_amount > 0 then
       new.charge_status := 'paid';
       new.fully_paid_at := coalesce(new.fully_paid_at, now());
-      new.full_collection_delay_days := coalesce(new.full_collection_delay_days, (new.fully_paid_at::date - new.due_on));
+      new.full_collection_delay_days := coalesce(
+        new.full_collection_delay_days,
+        (new.fully_paid_at::date - v_collection_deadline)
+      );
     elsif new.amount_paid > 0 then
-      new.charge_status := case when new.due_on < current_date then 'overdue' else 'partially_paid' end;
+      new.charge_status := case when v_collection_deadline < current_date then 'overdue' else 'partially_paid' end;
       new.fully_paid_at := null;
       new.full_collection_delay_days := null;
     else
-      new.charge_status := case when new.due_on < current_date then 'overdue' else 'scheduled' end;
+      new.charge_status := case when v_collection_deadline < current_date then 'overdue' else 'scheduled' end;
       new.fully_paid_at := null;
       new.full_collection_delay_days := null;
     end if;
@@ -793,7 +820,16 @@ as $$
 declare
   v_total_paid numeric(12,2);
   v_last_payment_at timestamptz;
+  v_collection_grace_period_days integer := 0;
 begin
+  select coalesce(la.collection_grace_period_days, 0)
+    into v_collection_grace_period_days
+  from app.rent_charge_periods rc
+  left join app.lease_agreements la
+    on la.id = rc.lease_agreement_id
+  where rc.id = p_rent_charge_period_id
+  limit 1;
+
   select
     coalesce(sum(pa.allocated_amount), 0)::numeric(12,2),
     max(pr.paid_at)
@@ -818,15 +854,21 @@ begin
          full_collection_delay_days = case
            when rc.charge_status = 'cancelled' then rc.full_collection_delay_days
            when v_total_paid >= rc.scheduled_amount and rc.scheduled_amount > 0 and v_last_payment_at is not null
-             then (v_last_payment_at::date - rc.due_on)
+             then (
+               v_last_payment_at::date
+               - (rc.due_on + greatest(coalesce(v_collection_grace_period_days, 0), 0))
+             )
            else null
          end,
          charge_status = case
            when rc.charge_status = 'cancelled' then 'cancelled'::app.rent_charge_status_enum
            when v_total_paid >= rc.scheduled_amount and rc.scheduled_amount > 0 then 'paid'::app.rent_charge_status_enum
-           when v_total_paid > 0 and rc.due_on < current_date then 'overdue'::app.rent_charge_status_enum
+           when v_total_paid > 0
+             and (rc.due_on + greatest(coalesce(v_collection_grace_period_days, 0), 0)) < current_date
+             then 'overdue'::app.rent_charge_status_enum
            when v_total_paid > 0 then 'partially_paid'::app.rent_charge_status_enum
-           when rc.due_on < current_date then 'overdue'::app.rent_charge_status_enum
+           when (rc.due_on + greatest(coalesce(v_collection_grace_period_days, 0), 0)) < current_date
+             then 'overdue'::app.rent_charge_status_enum
            else 'scheduled'::app.rent_charge_status_enum
          end
    where rc.id = p_rent_charge_period_id;

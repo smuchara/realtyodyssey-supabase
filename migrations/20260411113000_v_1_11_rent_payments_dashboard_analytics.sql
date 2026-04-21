@@ -88,6 +88,7 @@ $$;
 
 create or replace function app.get_rent_payment_charge_snapshot(
   p_property_id uuid default null,
+  p_unit_id uuid default null,
   p_reference_date date default current_date
 )
 returns table (
@@ -101,6 +102,7 @@ returns table (
   billing_period_start date,
   billing_period_end date,
   due_on date,
+  collection_deadline date,
   scheduled_amount numeric,
   amount_paid numeric,
   outstanding_amount numeric,
@@ -140,6 +142,10 @@ as $$
     rc.billing_period_start,
     rc.billing_period_end,
     rc.due_on,
+    (
+      rc.due_on
+      + greatest(coalesce(la.collection_grace_period_days, 0), 0)
+    )::date as collection_deadline,
     round(coalesce(rc.scheduled_amount, 0), 2) as scheduled_amount,
     round(coalesce(rc.amount_paid, 0), 2) as amount_paid,
     round(coalesce(rc.outstanding_amount, 0), 2) as outstanding_amount,
@@ -151,8 +157,18 @@ as $$
     (
       case
         when rc.full_collection_delay_days is not null then rc.full_collection_delay_days
-        when coalesce(rc.outstanding_amount, 0) > 0 and rc.due_on < coalesce(p_reference_date, current_date)
-          then (coalesce(p_reference_date, current_date) - rc.due_on)
+        when coalesce(rc.outstanding_amount, 0) > 0
+          and (
+            rc.due_on
+            + greatest(coalesce(la.collection_grace_period_days, 0), 0)
+          ) < coalesce(p_reference_date, current_date)
+          then (
+            coalesce(p_reference_date, current_date)
+            - (
+              rc.due_on
+              + greatest(coalesce(la.collection_grace_period_days, 0), 0)
+            )
+          )
         else 0
       end
     )::integer as effective_delay_days,
@@ -160,8 +176,18 @@ as $$
       (
         case
           when rc.full_collection_delay_days is not null then rc.full_collection_delay_days
-          when coalesce(rc.outstanding_amount, 0) > 0 and rc.due_on < coalesce(p_reference_date, current_date)
-            then (coalesce(p_reference_date, current_date) - rc.due_on)
+          when coalesce(rc.outstanding_amount, 0) > 0
+            and (
+              rc.due_on
+              + greatest(coalesce(la.collection_grace_period_days, 0), 0)
+            ) < coalesce(p_reference_date, current_date)
+            then (
+              coalesce(p_reference_date, current_date)
+              - (
+                rc.due_on
+                + greatest(coalesce(la.collection_grace_period_days, 0), 0)
+              )
+            )
           else 0
         end
       ),
@@ -172,8 +198,18 @@ as $$
         (
           case
             when rc.full_collection_delay_days is not null then rc.full_collection_delay_days
-            when coalesce(rc.outstanding_amount, 0) > 0 and rc.due_on < coalesce(p_reference_date, current_date)
-              then (coalesce(p_reference_date, current_date) - rc.due_on)
+            when coalesce(rc.outstanding_amount, 0) > 0
+              and (
+                rc.due_on
+                + greatest(coalesce(la.collection_grace_period_days, 0), 0)
+              ) < coalesce(p_reference_date, current_date)
+              then (
+                coalesce(p_reference_date, current_date)
+                - (
+                  rc.due_on
+                  + greatest(coalesce(la.collection_grace_period_days, 0), 0)
+                )
+              )
             else 0
           end
         ),
@@ -186,7 +222,10 @@ as $$
     ) as is_fully_paid,
     (
       coalesce(rc.outstanding_amount, 0) > 0
-      and rc.due_on < coalesce(p_reference_date, current_date)
+      and (
+        rc.due_on
+        + greatest(coalesce(la.collection_grace_period_days, 0), 0)
+      ) < coalesce(p_reference_date, current_date)
     ) as is_overdue,
     date_trunc('month', rc.billing_period_start)::date as billing_month
   from app.rent_charge_periods rc
@@ -202,6 +241,7 @@ as $$
   left join app.unit_occupancy_snapshots snapshot
     on snapshot.unit_id = rc.unit_id
   where rc.deleted_at is null
+    and (p_unit_id is null or rc.unit_id = p_unit_id)
     and rc.charge_status <> 'cancelled'::app.rent_charge_status_enum;
 $$;
 
@@ -251,7 +291,7 @@ begin
         end,
         1
       ) as collection_rate
-    from app.get_rent_payment_charge_snapshot(null, v_reference_date) as snapshot
+    from app.get_rent_payment_charge_snapshot(null, null, v_reference_date) as snapshot
     where snapshot.billing_period_start between v_period_start and v_period_end
     group by snapshot.property_id
   )
@@ -285,6 +325,7 @@ $$;
 
 create or replace function app.get_rent_payments_ledger_rows(
   p_property_id uuid default null,
+  p_unit_id uuid default null,
   p_limit integer default 50
 )
 returns table (
@@ -383,6 +424,20 @@ begin
   left join allocation_rollup
     on allocation_rollup.payment_record_id = pr.id
   where pr.deleted_at is null
+    and (
+      p_unit_id is null
+      or pr.unit_id = p_unit_id
+      or exists (
+        select 1
+        from app.payment_allocations pa_scope
+        join app.rent_charge_periods rc_scope
+          on rc_scope.id = pa_scope.rent_charge_period_id
+         and rc_scope.deleted_at is null
+        where pa_scope.payment_record_id = pr.id
+          and pa_scope.deleted_at is null
+          and rc_scope.unit_id = p_unit_id
+      )
+    )
   order by pr.paid_at desc, pr.created_at desc
   limit greatest(coalesce(p_limit, 50), 1);
 end;
@@ -390,6 +445,7 @@ $$;
 
 create or replace function app.get_rent_payments_dashboard(
   p_property_id uuid default null,
+  p_unit_id uuid default null,
   p_reference_date date default current_date
 )
 returns jsonb
@@ -413,7 +469,7 @@ begin
 
   with base as (
     select *
-    from app.get_rent_payment_charge_snapshot(p_property_id, v_reference_date)
+    from app.get_rent_payment_charge_snapshot(p_property_id, p_unit_id, v_reference_date)
   )
   select greatest(3, least(6, count(distinct billing_month)))::int
     into v_required_consistency_months
@@ -425,7 +481,7 @@ begin
 
   with base as (
     select *
-    from app.get_rent_payment_charge_snapshot(p_property_id, v_reference_date)
+    from app.get_rent_payment_charge_snapshot(p_property_id, p_unit_id, v_reference_date)
   ),
   current_period as (
     select *
@@ -440,16 +496,16 @@ begin
   due_current as (
     select *
     from current_period
-    where due_on <= v_reference_date
+    where collection_deadline <= v_reference_date
        or is_fully_paid
        or is_overdue
   ),
   due_previous as (
     select *
     from previous_period
-    where due_on <= v_previous_period_end
+    where collection_deadline <= v_previous_period_end
        or is_fully_paid
-       or (outstanding_amount > 0 and due_on < v_previous_period_end)
+       or is_overdue
   ),
   current_summary as (
     select
@@ -479,14 +535,14 @@ begin
         where positive_delay_days > 0
       ) as avg_delay_days,
       round(
-        coalesce(sum(outstanding_amount) filter (where due_on >= v_reference_date), 0),
+        coalesce(sum(outstanding_amount) filter (where collection_deadline >= v_reference_date), 0),
         2
       ) as outstanding_amount,
       round(
         case
           when coalesce(sum(scheduled_amount), 0) = 0 then 0
           else (
-            coalesce(sum(outstanding_amount) filter (where due_on >= v_reference_date), 0)
+            coalesce(sum(outstanding_amount) filter (where collection_deadline >= v_reference_date), 0)
             / nullif(sum(scheduled_amount), 0)
           ) * 100
         end,
@@ -684,7 +740,7 @@ begin
       round(avg(base.positive_delay_days::numeric) filter (where base.positive_delay_days > 0), 1) as avg_late_delay_days,
       round(coalesce(sum(base.outstanding_amount) filter (where base.is_overdue), 0), 2) as overdue_amount
     from base
-    where base.due_on <= v_reference_date
+    where base.collection_deadline <= v_reference_date
     group by base.property_id, base.property_name, base.unit_id, base.unit_label
   ),
   risk_candidates as (
@@ -1051,11 +1107,11 @@ revoke all on function app.get_payment_record_display_status(
   app.payment_record_status_enum,
   app.payment_allocation_status_enum
 ) from public, anon, authenticated;
-revoke all on function app.get_rent_payment_charge_snapshot(uuid, date) from public, anon, authenticated;
+revoke all on function app.get_rent_payment_charge_snapshot(uuid, uuid, date) from public, anon, authenticated;
 revoke all on function app.get_rent_payments_property_options() from public, anon, authenticated;
-revoke all on function app.get_rent_payments_dashboard(uuid, date) from public, anon, authenticated;
-revoke all on function app.get_rent_payments_ledger_rows(uuid, integer) from public, anon, authenticated;
+revoke all on function app.get_rent_payments_dashboard(uuid, uuid, date) from public, anon, authenticated;
+revoke all on function app.get_rent_payments_ledger_rows(uuid, uuid, integer) from public, anon, authenticated;
 
 grant execute on function app.get_rent_payments_property_options() to authenticated;
-grant execute on function app.get_rent_payments_dashboard(uuid, date) to authenticated;
-grant execute on function app.get_rent_payments_ledger_rows(uuid, integer) to authenticated;
+grant execute on function app.get_rent_payments_dashboard(uuid, uuid, date) to authenticated;
+grant execute on function app.get_rent_payments_ledger_rows(uuid, uuid, integer) to authenticated;
