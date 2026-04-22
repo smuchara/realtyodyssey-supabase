@@ -27,6 +27,7 @@ Deno.serve(async (req: Request) => {
       invoiceId, // Optional: for specific rent charge periods
       unitId, // Optional: for advance payments/top-ups
       amount, // Required if no invoiceId
+      advanceMonths, // Optional: future coverage hint for advance payments
       phoneNumber, // Optional: override phone number for STK prompt
       paymentSetupId, // Optional: use the exact setup resolved by the client
     } = body ?? {};
@@ -197,6 +198,11 @@ Deno.serve(async (req: Request) => {
     }
 
     // 5. Pre-persist STK Request (Status: PENDING)
+    const requestedAdvanceMonths =
+      Number.isInteger(advanceMonths) && advanceMonths > 0
+        ? Number(advanceMonths)
+        : null;
+
     const { data: stkRequest, error: requestError } = await serviceClient
       .from("mpesa_stk_requests")
       .insert({
@@ -207,6 +213,12 @@ Deno.serve(async (req: Request) => {
         payment_collection_setup_id: setup.id,
         amount: targetAmount,
         phone_number: formattedPhone,
+        payment_context: {
+          payment_intent: targetInvoiceId
+            ? "charge_payment"
+            : "advance_payment",
+          requested_advance_months: requestedAdvanceMonths,
+        },
         status: "pending",
       })
       .select()
