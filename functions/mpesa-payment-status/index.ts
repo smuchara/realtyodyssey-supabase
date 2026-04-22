@@ -39,15 +39,15 @@ Deno.serve(async (req: Request) => {
 
     const currentStatus = (data as Record<string, unknown> | null) ?? {};
 
-    const shouldRunStatusQuery =
-      currentStatus["status"] === "pending" &&
+    const shouldRunStatusQuery = currentStatus["status"] === "pending" &&
       currentStatus["is_posted"] != true &&
       currentStatus["callback_received"] != true;
 
     if (shouldRunStatusQuery) {
-      const { data: stkRequestRow, error: stkRequestError } = await serviceClient
-        .from("mpesa_stk_requests")
-        .select(`
+      const { data: stkRequestRow, error: stkRequestError } =
+        await serviceClient
+          .from("mpesa_stk_requests")
+          .select(`
           checkout_request_id,
           payment_collection_setup_id,
           payment_collection_setups (
@@ -56,8 +56,8 @@ Deno.serve(async (req: Request) => {
             metadata
           )
         `)
-        .eq("checkout_request_id", checkoutRequestId)
-        .maybeSingle();
+          .eq("checkout_request_id", checkoutRequestId)
+          .maybeSingle();
 
       if (!stkRequestError && stkRequestRow != null) {
         const row = stkRequestRow as Record<string, unknown>;
@@ -65,15 +65,13 @@ Deno.serve(async (req: Request) => {
         const setup = setupRaw && typeof setupRaw === "object"
           ? (setupRaw as Record<string, unknown>)
           : null;
-        const shortCode =
-          setup?.["paybill_number"]?.toString() ??
+        const shortCode = setup?.["paybill_number"]?.toString() ??
           setup?.["till_number"]?.toString();
         const metadataRaw = setup?.["metadata"];
         const metadata = metadataRaw && typeof metadataRaw === "object"
           ? (metadataRaw as Record<string, unknown>)
           : null;
-        const passKey =
-          metadata?.["mpesa_passkey"]?.toString() ??
+        const passKey = metadata?.["mpesa_passkey"]?.toString() ??
           Deno.env.get("MPESA_PASSKEY");
 
         if (
@@ -88,10 +86,11 @@ Deno.serve(async (req: Request) => {
               passKey: passKey.trim(),
               checkoutRequestId,
             });
-            const statusResultCode = typeof statusPayload.ResultCode === "number" ||
+            const statusResultCode =
+              typeof statusPayload.ResultCode === "number" ||
                 typeof statusPayload.ResultCode === "string"
-              ? String(statusPayload.ResultCode)
-              : "";
+                ? String(statusPayload.ResultCode)
+                : "";
 
             if (statusResultCode.length > 0) {
               await serviceClient
@@ -121,13 +120,15 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    return jsonResponse(data ?? {
-      checkout_request_id: checkoutRequestId,
-      status: "pending",
-      is_posted: false,
-      callback_received: false,
-      callback_processed: false,
-    });
+    return jsonResponse(
+      data ?? {
+        checkout_request_id: checkoutRequestId,
+        status: "pending",
+        is_posted: false,
+        callback_received: false,
+        callback_processed: false,
+      },
+    );
   } catch (error) {
     return errorResponse(
       error instanceof Error ? error.message : "Internal Server Error",
