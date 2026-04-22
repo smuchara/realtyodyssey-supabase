@@ -214,7 +214,9 @@ Deno.serve(async (req: Request) => {
         amount: targetAmount,
         phone_number: formattedPhone,
         payment_context: {
-          payment_intent: targetInvoiceId ? "charge_payment" : "advance_payment",
+          payment_intent: targetInvoiceId
+            ? "charge_payment"
+            : "advance_payment",
           requested_advance_months: requestedAdvanceMonths,
         },
         status: "pending",
