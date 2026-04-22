@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Confirm your RealtyOdyssey email</title>
+    <title>You're invited to RealtyOdyssey</title>
   </head>
   <body
     style="
@@ -84,7 +84,7 @@
                     letter-spacing: -0.01em;
                   "
                 >
-                  Confirm your<br />email address
+                  You have been<br />invited
                 </h1>
 
                 <p
@@ -95,73 +95,55 @@
                     color: #5f6675;
                   "
                 >
-                  Complete your RealtyOdyssey signup with the secure code below,
-                  or use the one-tap confirmation button further down.
+                  You've been invited to join RealtyOdyssey and create your
+                  account. Use the secure invitation link below to continue.
                 </p>
               </td>
             </tr>
 
             <tr>
-              <td style="padding: 40px 48px">
-                <p
-                  style="
-                    margin: 0 0 14px;
-                    font-size: 12px;
-                    font-weight: 700;
-                    letter-spacing: 0.12em;
-                    text-transform: uppercase;
-                    color: #6b7280;
-                  "
-                >
-                  Your verification code
-                </p>
-
+              <td style="padding: 40px 48px 28px">
                 <table
                   role="presentation"
                   cellpadding="0"
                   cellspacing="0"
                   border="0"
                   width="100%"
-                  style="margin-bottom: 20px"
+                  style="
+                    background: #f9fafb;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 16px;
+                  "
                 >
                   <tr>
-                    <td
-                      style="
-                        padding: 22px 28px;
-                        background: #f9fafb;
-                        border: 1px solid #e5e7eb;
-                        border-radius: 16px;
-                      "
-                    >
-                      <span
+                    <td style="padding: 22px 24px">
+                      <p
                         style="
-                          display: block;
-                          text-align: center;
-                          font-family: 'Courier New', Courier, monospace;
-                          font-size: 34px;
+                          margin: 0 0 8px;
+                          font-size: 12px;
                           font-weight: 700;
-                          letter-spacing: 12px;
-                          line-height: 1;
-                          color: #182235;
+                          letter-spacing: 0.12em;
+                          text-transform: uppercase;
+                          color: #6b7280;
                         "
                       >
-                        {{ .Token }}
-                      </span>
+                        Invitation destination
+                      </p>
+
+                      <p
+                        style="
+                          margin: 0;
+                          font-size: 15px;
+                          line-height: 1.7;
+                          color: #182235;
+                          word-break: break-word;
+                        "
+                      >
+                        {{ .SiteURL }}
+                      </p>
                     </td>
                   </tr>
                 </table>
-
-                <p
-                  style="
-                    margin: 0;
-                    font-size: 13px;
-                    line-height: 1.7;
-                    color: #6b7280;
-                  "
-                >
-                  Enter this code on the verification screen. If you requested a
-                  new code, only the most recent one will work.
-                </p>
               </td>
             </tr>
 
@@ -197,7 +179,7 @@
                           color: #6b7280;
                         "
                       >
-                        Prefer one-tap confirmation?
+                        Next step
                       </p>
 
                       <p
@@ -208,8 +190,8 @@
                           color: #4b5563;
                         "
                       >
-                        You can also verify your email directly using the secure
-                        confirmation link below.
+                        Accept your invitation to set up access and continue
+                        into the shared RealtyOdyssey workspace.
                       </p>
 
                       <a
@@ -226,7 +208,7 @@
                           letter-spacing: 0.02em;
                         "
                       >
-                        Confirm email
+                        Accept the invite
                       </a>
                     </td>
                   </tr>
@@ -250,7 +232,7 @@
                     color: #6b7280;
                   "
                 >
-                  If you did not create a RealtyOdyssey account, you can safely
+                  If you were not expecting this invitation, you can safely
                   ignore this email.
                 </p>
 
@@ -262,8 +244,8 @@
                     color: #9ca3af;
                   "
                 >
-                  This message helps us confirm that you own this email address
-                  and keeps your account secure.
+                  This invitation was sent to help you join the appropriate
+                  RealtyOdyssey workspace securely.
                 </p>
               </td>
             </tr>
@@ -279,7 +261,7 @@
               text-align: center;
             "
           >
-            RealtyOdyssey &nbsp;&middot;&nbsp; Account Security
+            RealtyOdyssey &nbsp;&middot;&nbsp; Invitation Access
           </p>
         </td>
       </tr>
