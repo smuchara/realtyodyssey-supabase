@@ -19,10 +19,9 @@ Deno.serve(async (req: Request) => {
     const { client } = await requireAuthenticatedUser(req);
     const serviceClient = getServiceRoleClient();
     const body = await parseJsonBody(req);
-    const checkoutRequestId =
-      typeof body?.checkoutRequestId === "string"
-        ? body.checkoutRequestId.trim()
-        : "";
+    const checkoutRequestId = typeof body?.checkoutRequestId === "string"
+      ? body.checkoutRequestId.trim()
+      : "";
 
     if (!checkoutRequestId) {
       return errorResponse("checkoutRequestId is required", 400);
@@ -63,18 +62,16 @@ Deno.serve(async (req: Request) => {
       if (!stkRequestError && stkRequestRow != null) {
         const row = stkRequestRow as Record<string, unknown>;
         const setupRaw = row["payment_collection_setups"];
-        const setup =
-          setupRaw && typeof setupRaw === "object"
-            ? (setupRaw as Record<string, unknown>)
-            : null;
+        const setup = setupRaw && typeof setupRaw === "object"
+          ? (setupRaw as Record<string, unknown>)
+          : null;
         const shortCode =
-          setup?["paybill_number"]?.toString() ??
-          setup?["till_number"]?.toString();
-        const metadataRaw = setup?["metadata"];
-        const metadata =
-          metadataRaw && typeof metadataRaw === "object"
-            ? (metadataRaw as Record<string, unknown>)
-            : null;
+          setup?.["paybill_number"]?.toString() ??
+          setup?.["till_number"]?.toString();
+        const metadataRaw = setup?.["metadata"];
+        const metadata = metadataRaw && typeof metadataRaw === "object"
+          ? (metadataRaw as Record<string, unknown>)
+          : null;
         const passKey =
           metadata?.["mpesa_passkey"]?.toString() ??
           Deno.env.get("MPESA_PASSKEY");
@@ -91,11 +88,10 @@ Deno.serve(async (req: Request) => {
               passKey: passKey.trim(),
               checkoutRequestId,
             });
-            const statusResultCode =
-              typeof statusPayload.ResultCode === "number" ||
+            const statusResultCode = typeof statusPayload.ResultCode === "number" ||
                 typeof statusPayload.ResultCode === "string"
-                ? String(statusPayload.ResultCode)
-                : "";
+              ? String(statusPayload.ResultCode)
+              : "";
 
             if (statusResultCode.length > 0) {
               await serviceClient

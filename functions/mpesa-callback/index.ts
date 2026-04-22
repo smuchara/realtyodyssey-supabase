@@ -10,19 +10,16 @@ Deno.serve(async (req: Request) => {
   try {
     const payload = await req.json();
     const stkCallback = payload?.Body?.stkCallback ?? null;
-    const checkoutRequestId =
-      typeof stkCallback?.CheckoutRequestID === "string"
-        ? stkCallback.CheckoutRequestID
-        : null;
-    const resultCode =
-      typeof stkCallback?.ResultCode === "string" ||
+    const checkoutRequestId = typeof stkCallback?.CheckoutRequestID === "string"
+      ? stkCallback.CheckoutRequestID
+      : null;
+    const resultCode = typeof stkCallback?.ResultCode === "string" ||
         typeof stkCallback?.ResultCode === "number"
-        ? String(stkCallback.ResultCode)
-        : null;
-    const resultDesc =
-      typeof stkCallback?.ResultDesc === "string"
-        ? stkCallback.ResultDesc
-        : null;
+      ? String(stkCallback.ResultCode)
+      : null;
+    const resultDesc = typeof stkCallback?.ResultDesc === "string"
+      ? stkCallback.ResultDesc
+      : null;
 
     console.log(
       "M-Pesa STK Callback Received:",
@@ -54,13 +51,13 @@ Deno.serve(async (req: Request) => {
 
     const { data, error } = callbackEventId
       ? await serviceClient
-          .schema("app")
-          .rpc("process_mpesa_stk_callback_event", {
-            p_event_id: callbackEventId,
-          })
+        .schema("app")
+        .rpc("process_mpesa_stk_callback_event", {
+          p_event_id: callbackEventId,
+        })
       : await serviceClient
-          .schema("app")
-          .rpc("record_mpesa_stk_callback", { p_payload: payload });
+        .schema("app")
+        .rpc("record_mpesa_stk_callback", { p_payload: payload });
 
     if (error) {
       console.error("Error processing M-Pesa callback:", error);
