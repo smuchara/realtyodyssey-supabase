@@ -21,6 +21,16 @@ type StkPushResult = {
   CustomerMessage: string;
 };
 
+type StkPushStatusResult = {
+  ResponseCode?: string;
+  ResponseDescription?: string;
+  MerchantRequestID?: string;
+  CheckoutRequestID?: string;
+  ResultCode?: string | number;
+  ResultDesc?: string;
+  [key: string]: unknown;
+};
+
 function getEnv(name: string) {
   const value = Deno.env.get(name);
   if (!value) {
@@ -211,4 +221,48 @@ export async function initiateStkPush(input: {
   }
 
   return payload;
+}
+
+export async function queryStkPushStatus(input: {
+  shortCode: string;
+  passKey: string;
+  checkoutRequestId: string;
+}): Promise<StkPushStatusResult> {
+  const now = new Date();
+  const timestamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
+
+  const password = getDarajaPassword(input.shortCode, input.passKey, timestamp);
+  const accessToken = await getDarajaAccessToken();
+
+  const response = await fetch(
+    `${getDarajaBaseUrl()}/mpesa/stkpushquery/v1/query`,
+    {
+      method: "POST",
+      signal: AbortSignal.timeout(25000),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        BusinessShortCode: input.shortCode,
+        Password: password,
+        Timestamp: timestamp,
+        CheckoutRequestID: input.checkoutRequestId,
+      }),
+    },
+  );
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(`STK Query failed: ${JSON.stringify(payload)}`);
+  }
+
+  return payload as StkPushStatusResult;
 }

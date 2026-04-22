@@ -47,6 +47,9 @@ verify_jwt = false
 [functions.mpesa-callback]
 verify_jwt = false
 
+[functions.mpesa-payment-status]
+verify_jwt = false
+
 [functions.mpesa-get-payment-setup]
 verify_jwt = false
 

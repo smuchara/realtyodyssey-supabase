@@ -415,7 +415,7 @@ begin
     where pa.deleted_at is null
     group by pa.payment_record_id
   ),
-  ledger_rows as (
+  recorded_ledger_rows as (
     select
       pr.id as payment_record_id,
       pr.property_id,
@@ -553,6 +553,81 @@ begin
             and rc_scope.unit_id = p_unit_id
         )
       )
+  ),
+  pending_request_rows as (
+    select
+      stk.id as payment_record_id,
+      stk.property_id,
+      coalesce(nullif(trim(p.display_name), ''), 'Untitled Property') as property_name,
+      stk.unit_id,
+      coalesce(nullif(trim(u.label), ''), 'Unlabelled Unit') as unit_label,
+      coalesce(
+        nullif(trim(snapshot.current_tenant_name), ''),
+        'Unassigned Tenant'
+      ) as tenant_name,
+      stk.created_at::date as paid_on,
+      stk.created_at as paid_at,
+      round(stk.amount, 2) as amount,
+      0::numeric as applied_amount,
+      round(stk.amount, 2) as unapplied_amount,
+      'KES'::text as currency_code,
+      coalesce(
+        app.get_payment_method_display_label(pcs.payment_method_type),
+        'M-Pesa'
+      ) as method_label,
+      'pending'::text as status_key,
+      'Pending Confirmation'::text as status_label,
+      'info'::text as status_variant,
+      null::integer as delay_days,
+      'Waiting for callback'::text as delay_label,
+      'Awaiting confirmation'::text as coverage_period_label,
+      0::integer as coverage_period_count,
+      case
+        when coalesce(stk.payment_context->>'payment_intent', '') = 'advance_payment'
+          then 'Advance payment request'
+        when stk.rent_charge_period_id is not null
+          then 'Current-period payment request'
+        else 'Pending payment request'
+      end as allocation_type,
+      'M-Pesa STK request'::text as verification_source,
+      stk.checkout_request_id as reference_code,
+      null::text as external_receipt_number,
+      null::text as payer_name,
+      stk.phone_number as payer_phone
+    from app.mpesa_stk_requests stk
+    join accessible_properties ap
+      on ap.property_id = stk.property_id
+    join app.properties p
+      on p.id = stk.property_id
+     and p.deleted_at is null
+    left join app.units u
+      on u.id = stk.unit_id
+     and u.deleted_at is null
+    left join app.unit_occupancy_snapshots snapshot
+      on snapshot.unit_id = stk.unit_id
+    left join app.payment_collection_setups pcs
+      on pcs.id = stk.payment_collection_setup_id
+     and pcs.deleted_at is null
+    where stk.status = 'pending'::app.mpesa_stk_status_enum
+      and (
+        p_unit_id is null
+        or stk.unit_id = p_unit_id
+      )
+      and not exists (
+        select 1
+        from app.payment_records pr_existing
+        where pr_existing.deleted_at is null
+          and pr_existing.metadata->>'checkout_request_id' = stk.checkout_request_id
+      )
+  ),
+  ledger_rows as (
+    select *
+    from recorded_ledger_rows
+
+    union all
+
+    select *
+    from pending_request_rows
   )
   select *
   from ledger_rows
