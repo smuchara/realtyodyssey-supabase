@@ -43,7 +43,10 @@ Deno.serve(async (req: Request) => {
       return errorResponse("amount must be a positive number", 400);
     }
 
-    const months = Math.max(1, Math.min(3, Number(requestedAdvanceMonths) || 1));
+    const months = Math.max(
+      1,
+      Math.min(3, Number(requestedAdvanceMonths) || 1),
+    );
 
     // -----------------------------------------------------------------------
     // 1. Eligibility pre-check (called with user JWT so auth.uid() resolves).
