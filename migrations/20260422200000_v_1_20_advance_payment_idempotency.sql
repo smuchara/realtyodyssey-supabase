@@ -383,3 +383,90 @@ values
   ('PAYMENT_BLOCKED_LOCK_WINDOW', 'Payment Blocked – Advance Lock Window', 211)
 on conflict (code) do update
   set label = excluded.label, sort_order = excluded.sort_order;
+
+-- ---------------------------------------------------------------------------
+-- 5. Update get_integration_health_registry to expose short_code and
+--    account_reference_hint so the UI can display and edit payment credentials.
+--    Must drop first because the return type (column list) is changing.
+-- ---------------------------------------------------------------------------
+
+drop function if exists app.get_integration_health_registry();
+
+create or replace function app.get_integration_health_registry()
+returns table (
+  id                     uuid,
+  scope_type             text,
+  scope_name             text,
+  method_type            text,
+  short_code             text,
+  account_reference_hint text,
+  status                 text,
+  last_verified          timestamptz,
+  failure_reason         text
+)
+language sql
+stable
+security definer
+set search_path = app, public
+as $$
+  -- 1. Workspace Level
+  select
+    s.id,
+    'Portfolio' as scope_type,
+    w.name as scope_name,
+    s.payment_method_type::text as method_type,
+    coalesce(s.paybill_number, s.till_number, s.send_money_phone_number) as short_code,
+    s.account_reference_hint,
+    case
+      when s.lifecycle_status = 'draft'                            then 'pending'
+      when (s.metadata->>'health_verified')::boolean = false       then 'failed'
+      else 'healthy'
+    end as status,
+    coalesce((s.metadata->>'last_verified_at')::timestamptz, s.updated_at) as last_verified,
+    s.metadata->>'health_error' as failure_reason
+  from app.payment_collection_setups s
+  join app.workspaces w on w.id = s.workspace_id
+  where s.scope_type = 'workspace'
+    and s.deleted_at is null
+    and s.lifecycle_status in ('active', 'draft')
+
+  union all
+
+  -- 2. Property Level
+  select
+    s.id,
+    'Property' as scope_type,
+    p.display_name as scope_name,
+    s.payment_method_type::text as method_type,
+    coalesce(s.paybill_number, s.till_number, s.send_money_phone_number) as short_code,
+    s.account_reference_hint,
+    case
+      when s.lifecycle_status = 'draft'                            then 'pending'
+      when (s.metadata->>'health_verified')::boolean = false       then 'failed'
+      else 'healthy'
+    end as status,
+    coalesce((s.metadata->>'last_verified_at')::timestamptz, s.updated_at) as last_verified,
+    s.metadata->>'health_error' as failure_reason
+  from app.payment_collection_setups s
+  join app.properties p on p.id = s.property_id
+  where s.scope_type = 'property'
+    and s.deleted_at is null
+    and s.lifecycle_status in ('active', 'draft')
+
+  union all
+
+  -- 3. Units that are NOT configured yet (to show gaps)
+  select
+    u.id,
+    'Unit'          as scope_type,
+    u.label         as scope_name,
+    'None'          as method_type,
+    null::text      as short_code,
+    null::text      as account_reference_hint,
+    'not_configured' as status,
+    null::timestamptz as last_verified,
+    'No direct or inherited setup found' as failure_reason
+  from app.units u
+  left join app.view_unit_payment_integration_health v on v.unit_id = u.id
+  where v.effective_setup_id is null;
+$$;
