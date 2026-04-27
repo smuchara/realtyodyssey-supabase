@@ -537,7 +537,8 @@ begin
             'version_label', ltv.version_label,
             'status', ltv.status,
             'published_at', ltv.published_at,
-            'placeholder_keys', ltv.placeholder_keys
+            'placeholder_keys', ltv.placeholder_keys,
+            'section_count', jsonb_array_length(coalesce(ltv.sections, '[]'::jsonb))
           )
           from app.lease_template_versions ltv
           where ltv.template_id = t.id

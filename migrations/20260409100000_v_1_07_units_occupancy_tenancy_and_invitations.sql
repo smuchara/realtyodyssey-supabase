@@ -1198,7 +1198,10 @@ create or replace function app.create_tenant_invitation(
   p_rent_due_day_of_month integer default 5,
   p_collection_grace_period_days integer default 2,
   p_currency_code text default 'KES',
-  p_expires_in_days integer default 7
+  p_expires_in_days integer default 7,
+  -- Optional template UUID (text so the RPC accepts it from JS without a cast error).
+  -- Silently ignored if null, empty, or not a valid UUID with a published version.
+  p_template_id text default null
 )
 returns jsonb
 language plpgsql
@@ -1219,6 +1222,10 @@ declare
   v_invitation_id uuid;
   v_lease_action_id uuid;
   v_invite_action_id uuid;
+  -- Template resolution
+  v_template_uuid uuid;
+  v_template_version_id uuid;
+  v_content_snapshot jsonb;
 begin
   if auth.uid() is null then
     raise exception 'Not authenticated';
@@ -1230,6 +1237,26 @@ begin
   v_notes := nullif(trim(coalesce(p_notes, '')), '');
   v_currency_code := upper(coalesce(nullif(trim(p_currency_code), ''), 'KES'));
   v_expires_at := now() + make_interval(days => greatest(coalesce(p_expires_in_days, 7), 1));
+
+  -- Resolve template: safe-cast the text param to uuid, then look up the latest
+  -- published (status = 'active') version to get the rendered content_snapshot.
+  if p_template_id is not null and length(trim(p_template_id)) > 0 then
+    begin
+      v_template_uuid := trim(p_template_id)::uuid;
+    exception when invalid_text_representation then
+      v_template_uuid := null;
+    end;
+
+    if v_template_uuid is not null then
+      select ltv.id, ltv.sections
+        into v_template_version_id, v_content_snapshot
+      from app.lease_template_versions ltv
+      where ltv.template_id = v_template_uuid
+        and ltv.status = 'active'
+      order by ltv.version_number desc
+      limit 1;
+    end if;
+  end if;
 
   if p_delivery_channel = 'email' and v_tenant_email is null then
     raise exception 'Tenant email is required for email delivery';
@@ -1326,7 +1353,8 @@ begin
     property_id, unit_id, tenant_name, tenant_phone, entered_by_user_id, lease_type,
     start_date, end_date, billing_cycle, rent_due_day_of_month, collection_grace_period_days,
     rent_amount, currency_code, status,
-    confirmation_status, agreement_notes, terms_snapshot
+    confirmation_status, agreement_notes, terms_snapshot,
+    template_version_id, content_snapshot
   )
   values (
     v_unit.property_id,
@@ -1360,14 +1388,16 @@ begin
       ),
       'delivery_channel', p_delivery_channel::text,
       'tenant_email', v_tenant_email
-    )
+    ),
+    v_template_version_id,
+    v_content_snapshot
   )
   returning id into v_lease_id;
 
   insert into app.tenant_invitations (
     property_id, unit_id, lease_agreement_id, invited_by_user_id, invited_phone_number,
     invited_email, invited_name, token_hash, delivery_channel, status, sent_at,
-    expires_at, metadata
+    expires_at, template_id, template_version_id, metadata
   )
   values (
     v_unit.property_id,
@@ -1382,6 +1412,8 @@ begin
     'sent',
     now(),
     v_expires_at,
+    v_template_uuid,
+    v_template_version_id,
     jsonb_build_object(
       'lease_type', p_lease_type::text,
       'lease_start_date', p_start_date,
@@ -2725,7 +2757,8 @@ revoke all on function app.create_tenant_invitation(
   integer,
   integer,
   text,
-  integer
+  integer,
+  text
 ) from public, anon, authenticated;
 
 revoke all on function app.get_tenant_invitation_by_token(text) from public, anon, authenticated;
@@ -2751,7 +2784,8 @@ grant execute on function app.create_tenant_invitation(
   integer,
   integer,
   text,
-  integer
+  integer,
+  text
 ) to authenticated;
 
 grant execute on function app.get_tenant_invitation_by_token(text) to authenticated, anon;
