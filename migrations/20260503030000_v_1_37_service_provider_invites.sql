@@ -34,7 +34,7 @@ create table if not exists app.vendor_invites (
   status           text        not null default 'pending'
                    check (status in ('pending', 'accepted', 'declined')),
   token            text        unique not null
-                   default encode(gen_random_bytes(32), 'hex'),
+                   default encode(extensions.gen_random_bytes(32), 'hex'),
   invited_by       uuid        not null references auth.users(id) on delete restrict,
   invited_at       timestamptz not null default now(),
   accepted_at      timestamptz,
