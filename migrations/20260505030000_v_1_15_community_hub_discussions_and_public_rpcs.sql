@@ -1,22 +1,19 @@
 -- ============================================================================
--- V 1 45: Community Discussions, Comments & Reactions
+-- V 1 15: Community Hub, Discussions, and Public RPCs
 -- ============================================================================
 -- Purpose
---   Back the Flutter tenant community feed with real-time Supabase data.
---   Covers:
---     • community_zone_members    — pre-computed tenant ↔ zone membership
---     • community_posts           — discussion (+ future announcement/poll) posts
---     • community_post_likes      — per-user post likes (idempotent)
---     • community_comments        — threaded comments on posts
---     • community_comment_reactions — emoji sticker or GIF reactions on comments
---   Provides:
---     • resolve_tenant_community_zone() RPC — called by mobile on app start
---     • Storage bucket policy for community-media
+--   - Model radius-based community zones, zone membership, posts, likes, comments, reactions, and media.
+--   - Expose the tenant zone-resolution RPC in the public schema for Supabase client calls.
+--   - Use RLS to keep write access scoped to authenticated zone members and owners.
+--
+-- Consolidated before first production publication. Earlier patch migrations
+-- were folded into these domain files so a fresh reset replays the final
+-- architecture without historical trial-and-error migration noise.
 -- ============================================================================
 
--- ── 0. Guard: ensure app.community_zones exists (v_1_44 dependency) ─────────
--- Uses IF NOT EXISTS throughout so this block is a safe no-op when v_1_44
--- has already been applied, and a self-healing fallback when it hasn't.
+-- ----------------------------------------------------------------------------
+-- Community zones, membership, discussion feed, reactions, and media policies
+-- ----------------------------------------------------------------------------
 
 create table if not exists app.community_zones (
   id                uuid          primary key default gen_random_uuid(),
@@ -140,7 +137,10 @@ create index if not exists idx_cpl_user_id  on app.community_post_likes (user_id
 
 -- Keep like_count in sync
 create or replace function app.sync_post_like_count()
-returns trigger language plpgsql as $$
+returns trigger
+language plpgsql
+set search_path = app, public
+as $$
 begin
   if tg_op = 'INSERT' then
     update app.community_posts set like_count = like_count + 1 where id = new.post_id;
@@ -178,7 +178,10 @@ create index if not exists idx_community_comments_post_id
 
 -- Keep comment_count in sync
 create or replace function app.sync_post_comment_count()
-returns trigger language plpgsql as $$
+returns trigger
+language plpgsql
+set search_path = app, public
+as $$
 begin
   if tg_op = 'INSERT' and new.deleted_at is null then
     update app.community_posts set comment_count = comment_count + 1 where id = new.post_id;
@@ -273,7 +276,12 @@ grant execute on function app.resolve_tenant_community_zone(uuid, uuid) to authe
 
 -- Helper: is the calling user a member of a given zone?
 create or replace function app.is_zone_member(p_zone_id uuid)
-returns boolean language sql stable security definer as $$
+returns boolean
+language sql
+stable
+security definer
+set search_path = app, public
+as $$
   select exists (
     select 1 from app.community_zone_members
     where community_zone_id = p_zone_id
@@ -405,10 +413,185 @@ create policy "authenticated_upload_community_media"
   on storage.objects for insert to authenticated
   with check (bucket_id = 'community-media');
 
-create policy "public_read_community_media"
-  on storage.objects for select to public
-  using (bucket_id = 'community-media');
-
 create policy "owner_delete_community_media"
   on storage.objects for delete to authenticated
   using (bucket_id = 'community-media' and owner = auth.uid());
+
+-- ----------------------------------------------------------------------------
+-- Public community-zone resolution RPC for client access
+-- ----------------------------------------------------------------------------
+
+create or replace function public.resolve_tenant_community_zone(
+  p_user_id     uuid,
+  p_property_id uuid
+) returns uuid
+language plpgsql security definer
+set search_path = public, app
+as $$
+declare
+  v_lat     double precision;
+  v_lng     double precision;
+  v_zone_id uuid;
+begin
+  select latitude, longitude
+  into   v_lat, v_lng
+  from   app.properties
+  where  id = p_property_id;
+
+  if v_lat is null or v_lng is null then
+    return null;
+  end if;
+
+  -- Closest zone whose radius contains this property (haversine)
+  select id into v_zone_id
+  from   app.community_zones
+  where (
+    6371.0 * 2.0 * asin(sqrt(
+      power(sin((radians(v_lat) - radians(center_lat)) / 2.0), 2) +
+      cos(radians(center_lat)) * cos(radians(v_lat)) *
+      power(sin((radians(v_lng) - radians(center_lng)) / 2.0), 2)
+    ))
+  ) <= radius_km
+  order by (
+    6371.0 * 2.0 * asin(sqrt(
+      power(sin((radians(v_lat) - radians(center_lat)) / 2.0), 2) +
+      cos(radians(center_lat)) * cos(radians(v_lat)) *
+      power(sin((radians(v_lng) - radians(center_lng)) / 2.0), 2)
+    ))
+  )
+  limit 1;
+
+  if v_zone_id is null then
+    return null;
+  end if;
+
+  insert into app.community_zone_members (community_zone_id, user_id, property_id)
+  values (v_zone_id, p_user_id, p_property_id)
+  on conflict (community_zone_id, user_id)
+  do update set property_id = excluded.property_id, joined_at = now();
+
+  return v_zone_id;
+end;
+$$;
+
+revoke all  on function public.resolve_tenant_community_zone(uuid, uuid) from public;
+grant execute on function public.resolve_tenant_community_zone(uuid, uuid) to authenticated;
+
+-- Remove the unreachable app-schema copy
+drop function if exists app.resolve_tenant_community_zone(uuid, uuid);
+
+-- ----------------------------------------------------------------------------
+-- SECURITY DEFINER execute hardening
+-- ----------------------------------------------------------------------------
+
+do $$
+declare
+  routine record;
+begin
+  for routine in
+    select
+      n.nspname as schema_name,
+      p.proname as function_name,
+      pg_get_function_identity_arguments(p.oid) as identity_arguments
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('app', 'public')
+      and p.prosecdef
+      and not (
+        (n.nspname = 'app' and p.proname in (
+          'get_tenant_invitation_by_token'
+        ))
+        or
+        (n.nspname = 'public' and p.proname in (
+          'get_collaboration_invite_public_details',
+          'get_vendor_invite_by_token',
+          'upsert_collaboration_invite_phone'
+        ))
+      )
+  loop
+    execute format(
+      'revoke execute on function %I.%I(%s) from public, anon',
+      routine.schema_name,
+      routine.function_name,
+      routine.identity_arguments
+    );
+  end loop;
+
+  for routine in
+    select
+      n.nspname as schema_name,
+      p.proname as function_name,
+      pg_get_function_identity_arguments(p.oid) as identity_arguments
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('app', 'public')
+      and p.prosecdef
+      and p.prorettype = 'trigger'::regtype
+  loop
+    execute format(
+      'revoke execute on function %I.%I(%s) from public, anon, authenticated',
+      routine.schema_name,
+      routine.function_name,
+      routine.identity_arguments
+    );
+  end loop;
+end
+$$;
+
+-- ----------------------------------------------------------------------------
+-- Foreign key covering indexes
+-- ----------------------------------------------------------------------------
+
+do $$
+declare
+  fk record;
+  index_name text;
+  indexed_columns text;
+begin
+  for fk in
+    select
+      ns.nspname as schema_name,
+      tbl.relname as table_name,
+      con.conname as constraint_name,
+      array_agg(att.attname order by key_cols.ordinality) as column_names
+    from pg_constraint con
+    join pg_class tbl on tbl.oid = con.conrelid
+    join pg_namespace ns on ns.oid = tbl.relnamespace
+    join unnest(con.conkey) with ordinality as key_cols(attnum, ordinality) on true
+    join pg_attribute att on att.attrelid = tbl.oid and att.attnum = key_cols.attnum
+    where con.contype = 'f'
+      and ns.nspname = 'app'
+      and not exists (
+        select 1
+        from pg_index idx
+        where idx.indrelid = con.conrelid
+          and idx.indisvalid
+          and idx.indisready
+          and (
+            select array_agg(indexed_key.attnum order by indexed_key.ordinality)::int2[]
+            from unnest(idx.indkey::int2[]) with ordinality as indexed_key(attnum, ordinality)
+            where indexed_key.ordinality <= array_length(con.conkey, 1)
+          ) = con.conkey
+      )
+    group by ns.nspname, tbl.relname, con.conname
+    order by ns.nspname, tbl.relname, con.conname
+  loop
+    index_name := left(
+      'idx_' || fk.table_name || '_' || array_to_string(fk.column_names, '_'),
+      54
+    ) || '_' || substr(md5(fk.constraint_name), 1, 8);
+
+    select string_agg(format('%I', column_name), ', ')
+      into indexed_columns
+    from unnest(fk.column_names) as column_name;
+
+    execute format(
+      'create index if not exists %I on %I.%I (%s)',
+      index_name,
+      fk.schema_name,
+      fk.table_name,
+      indexed_columns
+    );
+  end loop;
+end
+$$;

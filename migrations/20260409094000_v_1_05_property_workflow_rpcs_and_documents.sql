@@ -1088,6 +1088,7 @@ create or replace function public.storage_first_segment(p_object_name text)
 returns text
 language sql
 stable
+set search_path = public, storage
 as $$
   select (storage.foldername(p_object_name))[1];
 $$;
@@ -1102,6 +1103,7 @@ create or replace function public.is_valid_property_path(
 returns boolean
 language sql
 stable
+set search_path = public
 as $$
   select public.storage_first_segment(p_object_name) = p_expected_property_id::text;
 $$;
