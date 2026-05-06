@@ -1,25 +1,19 @@
 -- ============================================================================
--- V 1 34: Maintenance Module
+-- V 1 14: Maintenance, Providers, and Service Operations
 -- ============================================================================
 -- Purpose
---   Full maintenance request and ticket system covering:
---   - Reference / lookup tables (categories, areas, urgency, statuses)
---   - Fundi (contractor) profiles per workspace
---   - Tenant-submitted maintenance_requests
---   - Owner / operational maintenance_tickets (auto-created from requests)
---   - Media attachments
---   - Approval requests (scope-change sign-off)
---   - Immutable activity log (audit trail)
---   - RLS policies aligned with existing workspace membership helpers
---   - RPCs for tenant submission, owner dashboard, and ticket management
+--   - Model tenant maintenance requests, owner ticket operations, approvals, costs, media, and activity logs.
+--   - Support external provider invitation, acceptance, kanban, and assigned-ticket workflows.
+--   - Expose tenant/provider RPCs through least-privilege RLS and authenticated grants.
 --
--- Depends on
---   v1_01  app schema, profiles, workspaces, set_updated_at()
---   v1_02  RBAC helpers
---   v1_03  app.properties (display_name, workspace_id), app.units (label)
---   v1_04  is_active_member(), is_workspace_admin()
---   v1_07  app.unit_tenancies (tenant_user_id, unit_id, status)
+-- Consolidated before first production publication. Earlier patch migrations
+-- were folded into these domain files so a fresh reset replays the final
+-- architecture without historical trial-and-error migration noise.
 -- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- Maintenance request and ticket domain
+-- ----------------------------------------------------------------------------
 
 create schema if not exists app;
 
@@ -1186,3 +1180,1029 @@ end;
 $$;
 
 grant execute on function app.get_maintenance_summary(uuid) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Maintenance media storage bucket and policies
+-- ----------------------------------------------------------------------------
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'maintenance-media',
+  'maintenance-media',
+  true,
+  10485760,  -- 10 MB per file
+  array['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'video/mp4']
+)
+on conflict (id) do update
+  set public             = true,
+      file_size_limit    = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+-- Any authenticated user can upload (RLS on maintenance_media table enforces tenancy)
+create policy "maintenance_media_storage_insert"
+  on storage.objects for insert to authenticated
+  with check (bucket_id = 'maintenance-media');
+
+-- Public read — bucket is public so this is a formality but good for RLS completeness
+-- Uploader can delete their own files
+create policy "maintenance_media_storage_delete"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'maintenance-media'
+    and owner = auth.uid()
+  );
+
+-- ----------------------------------------------------------------------------
+-- Maintenance realtime publication
+-- ----------------------------------------------------------------------------
+
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    if not exists (
+      select 1
+      from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'app'
+        and tablename = 'maintenance_requests'
+    ) then
+      alter publication supabase_realtime add table app.maintenance_requests;
+    end if;
+
+    if not exists (
+      select 1
+      from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'app'
+        and tablename = 'maintenance_media'
+    ) then
+      alter publication supabase_realtime add table app.maintenance_media;
+    end if;
+  end if;
+end $$;
+
+-- ----------------------------------------------------------------------------
+-- Service provider invitation registry and RPCs
+-- ----------------------------------------------------------------------------
+
+create table if not exists app.vendor_invites (
+  id               uuid primary key default gen_random_uuid(),
+  workspace_id     uuid not null references app.workspaces(id) on delete cascade,
+
+  -- Provider type
+  profile_type     text not null check (profile_type in ('individual', 'company')),
+
+  -- Individual Fundi fields
+  full_name        text,
+  email            text not null,
+  phone            text,
+  id_number        text,
+
+  -- Company fields
+  company_name     text,
+  company_email    text,
+  company_phone    text,
+  contact_person   text,
+
+  -- Service profile
+  specializations  text[]      not null default '{}',
+  regions          jsonb       not null default '[]',
+  -- regions shape: [{ placeId, name, lat, lng }]
+
+  -- Invite tracking
+  status           text        not null default 'pending'
+                   check (status in ('pending', 'accepted', 'declined')),
+  token            text        unique not null
+                   default encode(extensions.gen_random_bytes(32), 'hex'),
+  invited_by       uuid        not null references auth.users(id) on delete restrict,
+  invited_at       timestamptz not null default now(),
+  accepted_at      timestamptz,
+
+  -- Linked fundi profile once accepted
+  fundi_profile_id uuid        references app.fundi_profiles(id) on delete set null
+);
+
+create index if not exists idx_vendor_invites_workspace
+  on app.vendor_invites (workspace_id);
+create index if not exists idx_vendor_invites_email
+  on app.vendor_invites (email);
+create index if not exists idx_vendor_invites_token
+  on app.vendor_invites (token);
+create index if not exists idx_vendor_invites_status
+  on app.vendor_invites (workspace_id, status);
+
+-- ─── 2. RLS ───────────────────────────────────────────────────────────────────
+
+alter table app.vendor_invites enable row level security;
+
+create policy "vendor_invites_select"
+  on app.vendor_invites for select to authenticated
+  using (app.is_active_member(workspace_id));
+
+create policy "vendor_invites_insert"
+  on app.vendor_invites for insert to authenticated
+  with check (
+    app.is_active_member(workspace_id)
+    and invited_by = auth.uid()
+  );
+
+create policy "vendor_invites_update"
+  on app.vendor_invites for update to authenticated
+  using (app.is_active_member(workspace_id));
+
+grant select, insert, update on app.vendor_invites to authenticated;
+
+-- ─── 3. RPC: invite_service_provider ──────────────────────────────────────────
+
+create or replace function app.invite_service_provider(
+  p_workspace_id    uuid,
+  p_profile_type    text,
+  p_email           text,
+  p_full_name       text     default null,
+  p_phone           text     default null,
+  p_id_number       text     default null,
+  p_company_name    text     default null,
+  p_company_email   text     default null,
+  p_company_phone   text     default null,
+  p_contact_person  text     default null,
+  p_specializations text[]   default '{}',
+  p_regions         jsonb    default '[]'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+declare
+  v_invite_id        uuid;
+  v_token            text;
+  v_email            text;
+  v_existing_user_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  if not app.is_active_member(p_workspace_id) then
+    raise exception 'Access denied' using errcode = 'P0403';
+  end if;
+
+  if p_email is null or char_length(trim(p_email)) < 3 then
+    raise exception 'A valid email address is required';
+  end if;
+  v_email := trim(lower(p_email));
+
+  select u.id
+    into v_existing_user_id
+  from auth.users u
+  where lower(trim(coalesce(u.email, ''))) = v_email
+  limit 1;
+
+  if v_existing_user_id is not null then
+    raise exception 'An account with this email already exists. Ask the provider to sign in with that email instead of sending a new invite.';
+  end if;
+
+  if p_profile_type not in ('individual', 'company') then
+    raise exception 'profile_type must be individual or company';
+  end if;
+
+  insert into app.vendor_invites (
+    workspace_id, profile_type,
+    full_name, email, phone, id_number,
+    company_name, company_email, company_phone, contact_person,
+    specializations, regions, invited_by
+  ) values (
+    p_workspace_id, p_profile_type,
+    nullif(trim(coalesce(p_full_name, '')), ''),
+    v_email,
+    nullif(trim(coalesce(p_phone, '')), ''),
+    nullif(trim(coalesce(p_id_number, '')), ''),
+    nullif(trim(coalesce(p_company_name, '')), ''),
+    nullif(trim(lower(coalesce(p_company_email, ''))), ''),
+    nullif(trim(coalesce(p_company_phone, '')), ''),
+    nullif(trim(coalesce(p_contact_person, '')), ''),
+    p_specializations,
+    p_regions,
+    auth.uid()
+  )
+  returning id, token into v_invite_id, v_token;
+
+  -- Email delivery is handled by the application layer using the returned token.
+  -- The caller constructs the invite URL: /join/vendor?token={v_token}
+
+  return jsonb_build_object(
+    'invite_id', v_invite_id,
+    'token',     v_token,
+    'email',     v_email
+  );
+end;
+$$;
+
+grant execute on function app.invite_service_provider(
+  uuid, text, text, text, text, text, text, text, text, text, text[], jsonb
+) to authenticated;
+
+-- ─── 4. RPC: get_workspace_vendor_invites ─────────────────────────────────────
+
+create or replace function app.get_workspace_vendor_invites(p_workspace_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = app, public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  if not app.is_active_member(p_workspace_id) then
+    raise exception 'Access denied' using errcode = 'P0403';
+  end if;
+
+  return coalesce(
+    (
+      select jsonb_agg(row order by row.invited_at desc)
+      from (
+        select
+          vi.id,
+          vi.profile_type,
+          coalesce(vi.full_name, vi.company_name)   as display_name,
+          coalesce(vi.email, vi.company_email)       as display_email,
+          coalesce(vi.phone, vi.company_phone)       as display_phone,
+          vi.specializations,
+          vi.regions,
+          vi.status,
+          vi.invited_at,
+          vi.accepted_at
+        from app.vendor_invites vi
+        where vi.workspace_id = p_workspace_id
+      ) row
+    ),
+    '[]'::jsonb
+  );
+end;
+$$;
+
+grant execute on function app.get_workspace_vendor_invites(uuid) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Vendor invite uniqueness and resend flow
+-- ----------------------------------------------------------------------------
+
+delete from app.vendor_invites
+where id not in (
+  select distinct on (workspace_id, email) id
+  from app.vendor_invites
+  order by workspace_id, email, invited_at desc
+);
+
+-- 2. Unique constraint
+alter table app.vendor_invites
+  add constraint uq_vendor_invites_workspace_email
+  unique (workspace_id, email);
+
+-- 3. Update RPC to upsert (do nothing on conflict) so callers get a clean error
+--    The application layer handles the conflict and returns a friendly message.
+
+-- 4. RPC: resend_vendor_invite — refresh invited_at and return fresh token
+create or replace function app.resend_vendor_invite(p_invite_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+declare
+  v_invite app.vendor_invites;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  select * into v_invite
+  from app.vendor_invites
+  where id = p_invite_id;
+
+  if not found then
+    raise exception 'Invite not found' using errcode = 'P0404';
+  end if;
+
+  if not app.is_active_member(v_invite.workspace_id) then
+    raise exception 'Access denied' using errcode = 'P0403';
+  end if;
+
+  -- Refresh timestamp so recipients know it is a new send
+  update app.vendor_invites
+  set invited_at = now()
+  where id = p_invite_id;
+
+  return jsonb_build_object(
+    'invite_id', v_invite.id,
+    'token',     v_invite.token,
+    'email',     v_invite.email
+  );
+end;
+$$;
+
+grant execute on function app.resend_vendor_invite(uuid) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Vendor acceptance flow and provider self-service RPCs
+-- ----------------------------------------------------------------------------
+
+alter table app.vendor_invites
+  add column if not exists user_id uuid references auth.users(id) on delete set null;
+
+-- Link fundi profile to auth user (one profile per user)
+alter table app.fundi_profiles
+  add column if not exists user_id uuid unique references auth.users(id) on delete set null;
+
+-- ─── 2. RPC: get_vendor_invite_by_token (public — no auth required) ───────────
+-- Used by the invite acceptance page to pre-fill the form.
+
+create or replace function public.get_vendor_invite_by_token(p_token text)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = app, public
+as $$
+declare
+  v_invite app.vendor_invites;
+begin
+  select * into v_invite
+  from app.vendor_invites
+  where token = p_token
+    and status = 'pending';
+
+  if not found then
+    return null;
+  end if;
+
+  return jsonb_build_object(
+    'id',              v_invite.id,
+    'profile_type',    v_invite.profile_type,
+    'full_name',       v_invite.full_name,
+    'company_name',    v_invite.company_name,
+    'contact_person',  v_invite.contact_person,
+    'email',           v_invite.email,
+    'phone',           coalesce(v_invite.phone, v_invite.company_phone),
+    'specializations', v_invite.specializations,
+    'regions',         v_invite.regions,
+    'workspace_id',    v_invite.workspace_id
+  );
+end;
+$$;
+
+grant execute on function public.get_vendor_invite_by_token(text) to anon, authenticated;
+
+-- ─── 3. RPC: accept_vendor_invite (authenticated) ────────────────────────────
+-- Called after OTP verification. Creates the fundi_profile and marks invite accepted.
+
+create or replace function app.accept_vendor_invite(
+  p_token    text,
+  p_name     text    default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+declare
+  v_user_id  uuid := auth.uid();
+  v_invite   app.vendor_invites;
+  v_profile  app.fundi_profiles;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  -- Find the invite (allow re-accepting for idempotency)
+  select * into v_invite
+  from app.vendor_invites
+  where token = p_token
+    and status in ('pending', 'accepted');
+
+  if not found then
+    raise exception 'Invite not found or already declined' using errcode = 'P0404';
+  end if;
+
+  -- Upsert fundi profile (idempotent)
+  insert into app.fundi_profiles (
+    workspace_id,
+    user_id,
+    name,
+    specialty,
+    phone,
+    available
+  ) values (
+    v_invite.workspace_id,
+    v_user_id,
+    coalesce(
+      nullif(trim(coalesce(p_name, '')), ''),
+      v_invite.full_name,
+      v_invite.contact_person,
+      v_invite.company_name,
+      'Provider'
+    ),
+    -- Use first specialization as primary specialty
+    coalesce(v_invite.specializations[1], 'general_repairs'),
+    coalesce(v_invite.phone, v_invite.company_phone),
+    true
+  )
+  on conflict (user_id)
+    do update set
+      name      = excluded.name,
+      specialty = excluded.specialty,
+      phone     = excluded.phone,
+      updated_at = now()
+  returning * into v_profile;
+
+  -- Mark invite as accepted
+  update app.vendor_invites
+  set status     = 'accepted',
+      user_id    = v_user_id,
+      accepted_at = now()
+  where id = v_invite.id;
+
+  return jsonb_build_object(
+    'fundi_profile_id', v_profile.id,
+    'workspace_id',     v_invite.workspace_id,
+    'name',             v_profile.name,
+    'specializations',  v_invite.specializations,
+    'regions',          v_invite.regions
+  );
+end;
+$$;
+
+grant execute on function app.accept_vendor_invite(text, text) to authenticated;
+
+-- ─── 4. RPC: get_my_provider_profile (authenticated) ─────────────────────────
+-- Returns the provider's profile and assigned tickets count.
+
+create or replace function app.get_my_provider_profile()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = app, public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_profile app.fundi_profiles;
+  v_invite  app.vendor_invites;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  select * into v_profile
+  from app.fundi_profiles
+  where user_id = v_user_id
+  limit 1;
+
+  if not found then
+    return null;
+  end if;
+
+  select * into v_invite
+  from app.vendor_invites
+  where user_id = v_user_id
+  limit 1;
+
+  return jsonb_build_object(
+    'id',              v_profile.id,
+    'name',            v_profile.name,
+    'specialty',       v_profile.specialty,
+    'phone',           v_profile.phone,
+    'rating',          v_profile.rating,
+    'completed_jobs',  v_profile.completed_jobs,
+    'available',       v_profile.available,
+    'workspace_id',    v_profile.workspace_id,
+    'specializations', coalesce(v_invite.specializations, '[]'::jsonb),
+    'regions',         coalesce(v_invite.regions, '[]'::jsonb),
+    'profile_type',    coalesce(v_invite.profile_type, 'individual')
+  );
+end;
+$$;
+
+grant execute on function app.get_my_provider_profile() to authenticated;
+
+-- ─── 5. RPC: get_my_assigned_tickets ─────────────────────────────────────────
+-- Returns maintenance tickets assigned to the authenticated provider.
+
+create or replace function app.get_my_assigned_tickets()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = app, public
+as $$
+declare
+  v_user_id   uuid := auth.uid();
+  v_profile   app.fundi_profiles;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  select * into v_profile
+  from app.fundi_profiles
+  where user_id = v_user_id
+  limit 1;
+
+  if not found then
+    return '[]'::jsonb;
+  end if;
+
+  return coalesce(
+    (
+      select jsonb_agg(row order by row.created_at desc)
+      from (
+        select
+          t.id                                                    as ticket_id,
+          t.reference                                             as ticket_reference,
+          r.title,
+          r.description,
+          c.label                                                 as category,
+          a.label                                                 as area,
+          p.display_name                                          as property_name,
+          coalesce(nullif(trim(u.label), ''), 'Unit')             as unit_name,
+          t.priority,
+          t.status,
+          t.estimated_cost,
+          t.actual_cost,
+          t.assigned_at,
+          t.started_at,
+          t.completed_at,
+          t.created_at
+        from app.maintenance_tickets   t
+        join app.maintenance_requests  r on r.id = t.request_id
+        join app.maintenance_categories c on c.id = r.category_id
+        join app.maintenance_areas      a on a.id = r.area_id
+        join app.properties             p on p.id = t.property_id
+        join app.units                  u on u.id = t.unit_id
+        where t.assigned_fundi_id = v_profile.id
+        order by t.created_at desc
+      ) row
+    ),
+    '[]'::jsonb
+  );
+end;
+$$;
+
+grant execute on function app.get_my_assigned_tickets() to authenticated;
+
+-- ─── 6. RLS update: provider can see their own fundi profile ──────────────────
+
+create policy "fundi_profiles_self_select"
+  on app.fundi_profiles for select to authenticated
+  using (user_id = auth.uid());
+
+create policy "fundi_profiles_self_update"
+  on app.fundi_profiles for update to authenticated
+  using (user_id = auth.uid());
+
+-- ----------------------------------------------------------------------------
+-- Provider kanban RPC
+-- ----------------------------------------------------------------------------
+
+create or replace function app.get_my_provider_kanban_tickets()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = app, public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_profile app.fundi_profiles;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  select * into v_profile
+  from app.fundi_profiles
+  where user_id = v_user_id
+  limit 1;
+
+  if not found then
+    return '[]'::jsonb;
+  end if;
+
+  return coalesce(
+    (
+      select jsonb_agg(row order by row.created_at desc)
+      from (
+        select
+          t.id                                                        as ticket_id,
+          t.reference                                                 as ticket_reference,
+          r.id                                                        as request_id,
+          r.title,
+          r.description,
+          c.label                                                     as category,
+          a.label                                                     as area,
+          p.display_name                                              as property_name,
+          t.property_id,
+          t.unit_id,
+          coalesce(nullif(trim(u.label), ''), 'Unit ' || u.id::text) as unit_name,
+          t.priority,
+          t.status                                                    as ticket_status,
+          t.blocked_reason,
+          t.completion_state,
+          t.estimated_cost,
+          t.actual_cost,
+          t.assigned_at,
+          t.created_at,
+          t.updated_at,
+
+          -- Assigned fundi (themselves)
+          jsonb_build_object(
+            'id',            v_profile.id,
+            'name',          v_profile.name,
+            'specialty',     v_profile.specialty,
+            'phone',         v_profile.phone,
+            'rating',        v_profile.rating,
+            'completedJobs', v_profile.completed_jobs,
+            'available',     v_profile.available
+          )                                                           as fundi,
+
+          -- Tenant name
+          coalesce(nullif(trim(prof.first_name || ' ' || prof.last_name), ' '), 'Tenant')
+                                                                      as tenant_name,
+
+          -- Pending approval request (if any)
+          (
+            select jsonb_build_object(
+              'id',               ar.id,
+              'reason',           ar.reason,
+              'requested_amount', ar.requested_amount,
+              'note',             ar.note,
+              'status',           ar.status,
+              'requested_at',     ar.requested_at
+            )
+            from app.maintenance_approval_requests ar
+            where ar.ticket_id = t.id
+              and ar.status    = 'pending'
+            order by ar.requested_at desc
+            limit 1
+          )                                                           as approval_request,
+
+          -- Media
+          coalesce(
+            (select jsonb_agg(
+               jsonb_build_object('id', m.id, 'url', m.url, 'type', m.media_type)
+               order by m.uploaded_at
+             )
+             from app.maintenance_media m where m.request_id = r.id),
+            '[]'::jsonb
+          )                                                           as media
+
+        from app.maintenance_tickets   t
+        join app.maintenance_requests  r on r.id = t.request_id
+        join app.maintenance_categories c on c.id = r.category_id
+        join app.maintenance_areas      a on a.id = r.area_id
+        join app.properties             p on p.id = t.property_id
+        join app.units                  u on u.id = t.unit_id
+        left join app.tenancies         tn on tn.unit_id = t.unit_id and tn.status = 'active'
+        left join public.profiles       prof on prof.id = tn.tenant_user_id
+        where t.assigned_fundi_id = v_profile.id
+        order by t.created_at desc
+      ) row
+    ),
+    '[]'::jsonb
+  );
+end;
+$$;
+
+grant execute on function app.get_my_provider_kanban_tickets() to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Provider cost updates and media-enriched ticket feed
+-- ----------------------------------------------------------------------------
+
+create or replace function app.update_provider_ticket_costs(
+  p_ticket_id      uuid,
+  p_estimated_cost numeric default null,
+  p_actual_cost    numeric default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+declare
+  v_fundi_profile app.fundi_profiles;
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  -- Find the fundi profile linked to this user
+  select * into v_fundi_profile
+  from app.fundi_profiles
+  where user_id = auth.uid()
+  limit 1;
+
+  if not found then
+    raise exception 'Provider profile not found' using errcode = 'P0404';
+  end if;
+
+  -- Ensure this ticket is actually assigned to this fundi
+  if not exists (
+    select 1 from app.maintenance_tickets
+    where id = p_ticket_id
+      and assigned_fundi_id = v_fundi_profile.id
+  ) then
+    raise exception 'Ticket not assigned to you' using errcode = 'P0403';
+  end if;
+
+  -- Update costs (coalesce preserves existing value when null is passed)
+  update app.maintenance_tickets set
+    estimated_cost = coalesce(p_estimated_cost, estimated_cost),
+    actual_cost    = coalesce(p_actual_cost, actual_cost)
+  where id = p_ticket_id;
+
+  -- Log the activity
+  insert into app.maintenance_activity_log
+    (ticket_id, event_type, label, actor_id, actor_name, metadata)
+  values (
+    p_ticket_id, 'status_changed',
+    'Costs updated'
+      || case when p_estimated_cost is not null
+              then ' — Est: Ksh ' || p_estimated_cost::text else '' end
+      || case when p_actual_cost    is not null
+              then ' · Actual: Ksh ' || p_actual_cost::text   else '' end,
+    auth.uid(),
+    coalesce(v_fundi_profile.name, 'Fundi'),
+    jsonb_build_object(
+      'estimated_cost', p_estimated_cost,
+      'actual_cost',    p_actual_cost
+    )
+  );
+end;
+$$;
+
+grant execute on function app.update_provider_ticket_costs(uuid, numeric, numeric) to authenticated;
+
+-- ─── 2. Update get_my_assigned_tickets to include media ───────────────────────
+
+create or replace function app.get_my_assigned_tickets()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = app, public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_profile app.fundi_profiles;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  select * into v_profile
+  from app.fundi_profiles
+  where user_id = v_user_id
+  limit 1;
+
+  if not found then
+    return '[]'::jsonb;
+  end if;
+
+  return coalesce(
+    (
+      select jsonb_agg(row order by row.created_at desc)
+      from (
+        select
+          t.id                                                        as ticket_id,
+          t.reference                                                 as ticket_reference,
+          r.id                                                        as request_id,
+          r.title,
+          r.description,
+          c.label                                                     as category,
+          a.label                                                     as area,
+          p.display_name                                              as property_name,
+          t.property_id,
+          t.unit_id,
+          coalesce(nullif(trim(u.label), ''), 'Unit')                 as unit_name,
+          t.priority,
+          t.status,
+          t.blocked_reason,
+          t.completion_state,
+          t.estimated_cost,
+          t.actual_cost,
+          t.assigned_at,
+          t.started_at,
+          t.completed_at,
+          t.created_at,
+          t.updated_at,
+
+          -- Pending approval request
+          (
+            select jsonb_build_object(
+              'id',               ar.id,
+              'reason',           ar.reason,
+              'requested_amount', ar.requested_amount,
+              'note',             ar.note,
+              'status',           ar.status,
+              'requested_at',     ar.requested_at
+            )
+            from app.maintenance_approval_requests ar
+            where ar.ticket_id = t.id
+              and ar.status    = 'pending'
+            order by ar.requested_at desc
+            limit 1
+          )                                                           as approval_request,
+
+          -- Media (evidence photos)
+          coalesce(
+            (select jsonb_agg(
+               jsonb_build_object('id', m.id, 'url', m.url, 'type', m.media_type)
+               order by m.uploaded_at
+             )
+             from app.maintenance_media m where m.request_id = r.id),
+            '[]'::jsonb
+          )                                                           as media
+
+        from app.maintenance_tickets   t
+        join app.maintenance_requests  r  on r.id = t.request_id
+        join app.maintenance_categories c on c.id = r.category_id
+        join app.maintenance_areas      a on a.id = r.area_id
+        join app.properties             p on p.id = t.property_id
+        join app.units                  u on u.id = t.unit_id
+        where t.assigned_fundi_id = v_profile.id
+        order by t.created_at desc
+      ) row
+    ),
+    '[]'::jsonb
+  );
+end;
+$$;
+
+grant execute on function app.get_my_assigned_tickets() to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Provider ticket movement workflow
+-- ----------------------------------------------------------------------------
+
+create or replace function app.move_provider_ticket(
+  p_ticket_id uuid,
+  p_status    text
+)
+returns void
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+declare
+  v_fundi_profile app.fundi_profiles;
+  v_old_status    text;
+  v_allowed_statuses text[] := ARRAY['assigned','in_progress','approval_needed','completed'];
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  if p_status != all(v_allowed_statuses) then
+    raise exception 'Invalid status: %', p_status using errcode = 'P0400';
+  end if;
+
+  -- Find the fundi profile for this user
+  select * into v_fundi_profile
+  from app.fundi_profiles
+  where user_id = auth.uid()
+  limit 1;
+
+  if not found then
+    raise exception 'Provider profile not found' using errcode = 'P0404';
+  end if;
+
+  -- Verify the ticket is assigned to this fundi
+  select status into v_old_status
+  from app.maintenance_tickets
+  where id = p_ticket_id
+    and assigned_fundi_id = v_fundi_profile.id;
+
+  if not found then
+    raise exception 'Ticket not assigned to you' using errcode = 'P0403';
+  end if;
+
+  -- Update status
+  update app.maintenance_tickets set
+    status     = p_status,
+    started_at = case when p_status = 'in_progress' and started_at is null then now() else started_at end,
+    completed_at = case when p_status = 'completed' then now() else completed_at end
+  where id = p_ticket_id;
+
+  -- Log activity
+  insert into app.maintenance_activity_log
+    (ticket_id, event_type, label, actor_id, actor_name)
+  values (
+    p_ticket_id,
+    'status_changed',
+    'Status: ' || v_old_status || ' → ' || p_status,
+    auth.uid(),
+    coalesce(v_fundi_profile.name, 'Fundi')
+  );
+end;
+$$;
+
+grant execute on function app.move_provider_ticket(uuid, text) to authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Tenant maintenance feed assigned-provider details
+-- ----------------------------------------------------------------------------
+
+create or replace function app.get_tenant_maintenance_requests()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = app, public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  return coalesce(
+    (
+      select jsonb_agg(row order by row.created_at desc)
+      from (
+        select
+          r.id,
+          r.reference,
+          r.title,
+          r.description,
+          c.code                                                   as category_code,
+          c.label                                                  as category,
+          a.code                                                   as area_code,
+          a.label                                                  as area,
+          r.urgency,
+          r.priority,
+          r.status,
+          s.label                                                  as status_label,
+          r.property_id,
+          p.display_name                                           as property_name,
+          r.unit_id,
+          coalesce(nullif(trim(u.label), ''), 'Unit ' || u.id::text)
+                                                                    as unit_name,
+          concat_ws(', ', nullif(trim(u.block), ''), nullif(trim(u.floor), ''))
+                                                                    as residence_address,
+          r.tenant_user_id                                         as tenant_id,
+          coalesce(
+            nullif(trim(prof.first_name || ' ' || prof.last_name), ''),
+            prof.email,
+            'Tenant'
+          )                                                        as tenant_name,
+          t.id                                                     as ticket_id,
+          t.reference                                              as ticket_reference,
+          t.status                                                 as ticket_status,
+          t.assigned_fundi_id,
+          t.assigned_at,
+          case
+            when f.id is null then null
+            else jsonb_build_object(
+              'id',             f.id,
+              'name',           f.name,
+              'specialty',      coalesce(nullif(trim(f.specialty), ''), 'Maintenance Fundi'),
+              'phone',          f.phone,
+              'rating',         f.rating,
+              'completed_jobs', f.completed_jobs
+            )
+          end                                                      as fundi,
+          coalesce(
+            (select jsonb_agg(
+               jsonb_build_object('id', m.id, 'url', m.url, 'type', m.media_type)
+               order by m.uploaded_at
+             )
+             from app.maintenance_media m
+             where m.request_id = r.id),
+            '[]'::jsonb
+          )                                                        as media,
+          r.created_at,
+          r.updated_at,
+          r.resolved_at
+        from app.maintenance_requests r
+        join app.maintenance_categories c on c.id = r.category_id
+        join app.maintenance_areas      a on a.id = r.area_id
+        join app.maintenance_request_statuses s on s.code = r.status
+        join app.properties             p on p.id = r.property_id
+        join app.units                  u on u.id = r.unit_id
+        left join app.profiles       prof on prof.id = r.tenant_user_id
+        left join app.maintenance_tickets t on t.request_id = r.id
+        left join app.fundi_profiles     f on f.id = t.assigned_fundi_id
+        where r.tenant_user_id = v_uid
+      ) row
+    ),
+    '[]'::jsonb
+  );
+end;
+$$;
+
+grant execute on function app.get_tenant_maintenance_requests() to authenticated;
