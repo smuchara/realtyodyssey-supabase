@@ -58,3 +58,6 @@ verify_jwt = false
 
 [functions.daraja-c2b-confirmation]
 verify_jwt = false
+
+[functions.send-tenant-pushes]
+verify_jwt = false

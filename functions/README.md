@@ -13,8 +13,8 @@ Functions:
   requests.
 - `mpesa-c2b-confirmation`: public callback endpoint for Daraja confirmation
   requests.
-- `send-tenant-pushes`: dispatches queued tenant maintenance review prompts to
-  Firebase Cloud Messaging for users who are outside the app.
+- `send-tenant-pushes`: dispatches queued tenant maintenance notifications and
+  review prompts to Firebase Cloud Messaging for users who are outside the app.
 
 Required environment variables:
 
@@ -49,5 +49,14 @@ Notes:
 - The current implementation is designed for C2B paybill and till flows first.
 - Send Money setups are persisted in the database but do not call Daraja URL
   registration.
-- Schedule `send-tenant-pushes` with a `POST` request and an
-  `x-push-dispatch-secret` header matching `PUSH_DISPATCH_SECRET`.
+- `send-tenant-pushes` is protected by `x-push-dispatch-secret` matching
+  `PUSH_DISPATCH_SECRET`; do not put this value in Flutter.
+- Deploy `send-tenant-pushes` with JWT verification disabled. The function uses
+  its own dispatch secret instead.
+- Schedule `send-tenant-pushes` with a `POST` request and the
+  `x-push-dispatch-secret` header. Queued rows in `tenant_push_deliveries` will
+  not become phone notifications until this function is called.
+- To inspect the latest saved tokens and delivery rows, call the function with:
+  `{"action":"diagnostics","tenant_user_id":"<auth user id>"}`.
+- To send a server-side push test to the latest active token, call it with:
+  `{"action":"debug_self_test","tenant_user_id":"<auth user id>"}`.
