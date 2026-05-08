@@ -281,10 +281,12 @@ async function sendDebugSelfTest(
   const { data, error } = await query;
   if (error) throw new HttpError(error.message, 400);
 
-  const tokens = (data ?? []) as Array<PushToken & {
-    tenant_user_id: string;
-    last_seen_at: string;
-  }>;
+  const tokens = (data ?? []) as Array<
+    PushToken & {
+      tenant_user_id: string;
+      last_seen_at: string;
+    }
+  >;
 
   if (tokens.length === 0) {
     return {
