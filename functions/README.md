@@ -13,6 +13,8 @@ Functions:
   requests.
 - `mpesa-c2b-confirmation`: public callback endpoint for Daraja confirmation
   requests.
+- `send-tenant-pushes`: dispatches queued tenant maintenance review prompts to
+  Firebase Cloud Messaging for users who are outside the app.
 
 Required environment variables:
 
@@ -21,6 +23,13 @@ Required environment variables:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `MPESA_CONSUMER_KEY`
 - `MPESA_CONSUMER_SECRET`
+
+Push notification environment variables:
+
+- `PUSH_DISPATCH_SECRET`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_CLIENT_EMAIL`
+- `FIREBASE_PRIVATE_KEY`
 
 Optional environment variables:
 
@@ -40,3 +49,5 @@ Notes:
 - The current implementation is designed for C2B paybill and till flows first.
 - Send Money setups are persisted in the database but do not call Daraja URL
   registration.
+- Schedule `send-tenant-pushes` with a `POST` request and an
+  `x-push-dispatch-secret` header matching `PUSH_DISPATCH_SECRET`.
