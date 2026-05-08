@@ -63,3 +63,48 @@ Notes:
   `{"action":"diagnostics","tenant_user_id":"<auth user id>"}`.
 - To send a server-side push test to the latest active token, call it with:
   `{"action":"debug_self_test","tenant_user_id":"<auth user id>"}`.
+
+## Tenant push webhook setup
+
+When deploying to a clean Supabase project, queued push deliveries are not sent
+automatically until a Database Webhook calls `send-tenant-pushes`. This webhook
+is required for maintenance status changes and completion-review prompts to
+reach tenants while the app is closed.
+
+Create the webhook from Supabase Dashboard → Database → Webhooks.
+
+General:
+
+- Name: `push_notification_flutter_android_app`
+
+Conditions:
+
+- Table: `app.tenant_push_deliveries`
+- Events: `Insert`
+- Do not select `Update` or `Delete`.
+
+Preferred configuration:
+
+- Type of webhook: `HTTP Request`
+- Method: `POST`
+- URL: `https://<project-ref>.supabase.co/functions/v1/send-tenant-pushes`
+- Timeout: `5000`
+
+Headers:
+
+- `Content-Type`: `application/json`
+- `x-push-dispatch-secret`: the exact `PUSH_DISPATCH_SECRET` value configured in
+  Edge Function secrets.
+
+Alternative URL format:
+
+- `https://<project-ref>.functions.supabase.co/send-tenant-pushes`
+
+After creating the webhook, test by changing a maintenance ticket status. A row
+should be inserted into `app.tenant_push_deliveries`, the webhook should invoke
+`send-tenant-pushes`, and the delivery status should move from `pending` to
+`sent`.
+
+If the function logs stay empty and delivery rows stay at `attempts = 0`, the
+webhook is not firing. Recheck that the table is `app.tenant_push_deliveries`,
+the event is only `Insert`, and the webhook type is `HTTP Request`.
