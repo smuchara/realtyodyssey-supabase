@@ -55,8 +55,8 @@ Notes:
   its own dispatch secret instead.
 - Configure a Supabase Database Webhook on `app.tenant_push_deliveries` inserts
   to call `send-tenant-pushes` with a `POST` request and the
-  `x-push-dispatch-secret` header. Queued rows in `tenant_push_deliveries`
-  will not become phone notifications until this function is called.
+  `x-push-dispatch-secret` header. Queued rows in `tenant_push_deliveries` will
+  not become phone notifications until this function is called.
 - Use webhook URL:
   `https://ifpfptvajcqdcpbtsfsc.functions.supabase.co/send-tenant-pushes`.
 - To inspect the latest saved tokens and delivery rows, call the function with:
