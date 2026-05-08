@@ -87,15 +87,14 @@ Preferred configuration:
 
 - Type of webhook: `HTTP Request`
 - Method: `POST`
-- URL:
-  `https://<project-ref>.supabase.co/functions/v1/send-tenant-pushes`
+- URL: `https://<project-ref>.supabase.co/functions/v1/send-tenant-pushes`
 - Timeout: `5000`
 
 Headers:
 
 - `Content-Type`: `application/json`
-- `x-push-dispatch-secret`: the exact `PUSH_DISPATCH_SECRET` value configured
-  in Edge Function secrets.
+- `x-push-dispatch-secret`: the exact `PUSH_DISPATCH_SECRET` value configured in
+  Edge Function secrets.
 
 Alternative URL format:
 
