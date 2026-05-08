@@ -95,8 +95,52 @@ create index if not exists idx_maintenance_ticket_feedback_ticket
 create index if not exists idx_maintenance_ticket_feedback_tenant
   on app.maintenance_ticket_feedback (tenant_user_id, submitted_at desc);
 
+create table if not exists app.tenant_push_tokens (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_user_id uuid not null references auth.users(id) on delete cascade,
+  platform       text not null check (platform in ('android', 'ios')),
+  token          text not null unique,
+  is_active      boolean not null default true,
+  last_seen_at   timestamptz not null default now(),
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+
+drop trigger if exists trg_tenant_push_tokens_updated_at on app.tenant_push_tokens;
+create trigger trg_tenant_push_tokens_updated_at
+  before update on app.tenant_push_tokens
+  for each row execute function app.set_updated_at();
+
+create index if not exists idx_tenant_push_tokens_user_active
+  on app.tenant_push_tokens (tenant_user_id, is_active);
+
+create table if not exists app.tenant_push_deliveries (
+  id              uuid primary key default gen_random_uuid(),
+  notification_id uuid not null unique references app.tenant_notifications(id) on delete cascade,
+  tenant_user_id  uuid not null references auth.users(id) on delete cascade,
+  status          text not null default 'pending'
+                    check (status in ('pending', 'sent', 'failed', 'skipped')),
+  attempts        integer not null default 0,
+  last_error      text,
+  sent_at         timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+drop trigger if exists trg_tenant_push_deliveries_updated_at on app.tenant_push_deliveries;
+create trigger trg_tenant_push_deliveries_updated_at
+  before update on app.tenant_push_deliveries
+  for each row execute function app.set_updated_at();
+
+create index if not exists idx_tenant_push_deliveries_status
+  on app.tenant_push_deliveries (status, created_at);
+create index if not exists idx_tenant_push_deliveries_tenant
+  on app.tenant_push_deliveries (tenant_user_id, created_at desc);
+
 alter table app.tenant_notifications enable row level security;
 alter table app.maintenance_ticket_feedback enable row level security;
+alter table app.tenant_push_tokens enable row level security;
+alter table app.tenant_push_deliveries enable row level security;
 
 drop policy if exists "tenant_notifications_select" on app.tenant_notifications;
 create policy "tenant_notifications_select"
@@ -131,8 +175,107 @@ create policy "maintenance_ticket_feedback_update"
   using (tenant_user_id = auth.uid())
   with check (tenant_user_id = auth.uid());
 
+drop policy if exists "tenant_push_tokens_select" on app.tenant_push_tokens;
+create policy "tenant_push_tokens_select"
+  on app.tenant_push_tokens for select to authenticated
+  using (tenant_user_id = auth.uid());
+
+drop policy if exists "tenant_push_tokens_insert" on app.tenant_push_tokens;
+create policy "tenant_push_tokens_insert"
+  on app.tenant_push_tokens for insert to authenticated
+  with check (tenant_user_id = auth.uid());
+
+drop policy if exists "tenant_push_tokens_update" on app.tenant_push_tokens;
+create policy "tenant_push_tokens_update"
+  on app.tenant_push_tokens for update to authenticated
+  using (tenant_user_id = auth.uid())
+  with check (tenant_user_id = auth.uid());
+
+drop policy if exists "tenant_push_deliveries_select" on app.tenant_push_deliveries;
+create policy "tenant_push_deliveries_select"
+  on app.tenant_push_deliveries for select to authenticated
+  using (tenant_user_id = auth.uid());
+
 grant select, update on app.tenant_notifications to authenticated;
 grant select, insert, update on app.maintenance_ticket_feedback to authenticated;
+grant select, insert, update on app.tenant_push_tokens to authenticated;
+grant select on app.tenant_push_deliveries to authenticated;
+
+create or replace function app.register_tenant_push_token(
+  p_token text,
+  p_platform text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_token text := nullif(trim(p_token), '');
+  v_platform text := lower(nullif(trim(p_platform), ''));
+  v_token_id uuid;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = 'P0401';
+  end if;
+
+  if v_token is null then
+    raise exception 'Push token is required' using errcode = 'P0400';
+  end if;
+
+  if v_platform not in ('android', 'ios') then
+    raise exception 'Unsupported push platform' using errcode = 'P0400';
+  end if;
+
+  insert into app.tenant_push_tokens (
+    tenant_user_id,
+    platform,
+    token,
+    is_active,
+    last_seen_at
+  )
+  values (
+    v_uid,
+    v_platform,
+    v_token,
+    true,
+    now()
+  )
+  on conflict (token) do update
+    set tenant_user_id = excluded.tenant_user_id,
+        platform = excluded.platform,
+        is_active = true,
+        last_seen_at = now(),
+        updated_at = now()
+  returning id into v_token_id;
+
+  return jsonb_build_object('token_id', v_token_id, 'status', 'registered');
+end;
+$$;
+
+create or replace function app.on_tenant_notification_push_queued()
+returns trigger
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+begin
+  if new.status = 'pending'
+     and new.type in ('maintenance_completion_review', 'maintenance_delay_checkin') then
+    insert into app.tenant_push_deliveries (notification_id, tenant_user_id)
+    values (new.id, new.tenant_user_id)
+    on conflict (notification_id) do nothing;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_tenant_notification_push_queued on app.tenant_notifications;
+create trigger trg_tenant_notification_push_queued
+  after insert on app.tenant_notifications
+  for each row execute function app.on_tenant_notification_push_queued();
 
 create or replace function app.enqueue_completed_maintenance_review_notification(
   p_ticket_id uuid
@@ -626,6 +769,7 @@ $$;
 
 grant execute on function app.enqueue_completed_maintenance_review_notification(uuid) to authenticated;
 grant execute on function app.ensure_maintenance_satisfaction_notifications() to authenticated;
+grant execute on function app.register_tenant_push_token(text, text) to authenticated;
 grant execute on function app.get_tenant_notifications() to authenticated;
 grant execute on function app.mark_tenant_notification_opened(uuid) to authenticated;
 grant execute on function app.mark_tenant_notification_popup_shown(uuid) to authenticated;
