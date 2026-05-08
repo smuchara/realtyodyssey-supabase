@@ -191,19 +191,17 @@ begin
 
   -- ── Tenant satisfaction (derived proxy) ──────────────────────────────────
   -- Proxy 1: on-time payment rate from prev month (40%)
+  -- On-time = fully paid with full_collection_delay_days <= 0 (paid before/on grace deadline)
+  -- due_on <= v_prev_period_end ensures the charge was already due (prev month always qualifies)
   select
     case
-      when count(*) filter (where rcp.collection_deadline <= v_prev_period_end) = 0 then 0
+      when count(*) = 0 then 0
       else round(
         count(*) filter (
           where rcp.charge_status = 'paid'
-            and rcp.full_collection_delay_days <= 0
-            and rcp.collection_deadline <= v_prev_period_end
+            and coalesce(rcp.full_collection_delay_days, 0) <= 0
         )::numeric
-        / nullif(
-          count(*) filter (where rcp.collection_deadline <= v_prev_period_end),
-          0
-        ) * 100, 1
+        / count(*) * 100, 1
       )
     end
   into v_on_time_rate
