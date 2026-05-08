@@ -29,6 +29,19 @@ type PushToken = {
   platform: "android" | "ios";
 };
 
+type DispatchRequest = {
+  action?: "dispatch_pending" | "debug_self_test" | "diagnostics";
+  tenant_user_id?: string;
+  title?: string;
+  body?: string;
+};
+
+class HttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 let cachedAccessToken: { token: string; expiresAt: number } | null = null;
 
 Deno.serve(async (req: Request) => {
@@ -38,7 +51,18 @@ Deno.serve(async (req: Request) => {
   try {
     requireDispatchAuth(req);
 
+    const body = await readDispatchRequest(req);
     const serviceClient = getServiceRoleClient();
+    const action = body.action ?? "dispatch_pending";
+
+    if (action === "diagnostics") {
+      return jsonResponse(await getDiagnostics(serviceClient, body));
+    }
+
+    if (action === "debug_self_test") {
+      return jsonResponse(await sendDebugSelfTest(serviceClient, body));
+    }
+
     const { data: deliveries, error: deliveriesError } = await serviceClient
       .from("tenant_push_deliveries")
       .select("id, attempts, tenant_user_id, notification_id")
@@ -58,14 +82,16 @@ Deno.serve(async (req: Request) => {
       results.push(result);
     }
 
+    console.log("push dispatch complete", { processed: results.length });
     return jsonResponse({
       processed: results.length,
       results,
     });
   } catch (error) {
+    console.error("push dispatch failed", error);
     return errorResponse(
       error instanceof Error ? error.message : "Internal Server Error",
-      500,
+      error instanceof HttpError ? error.status : 500,
     );
   }
 });
@@ -78,7 +104,18 @@ function requireDispatchAuth(req: Request) {
 
   const provided = req.headers.get("x-push-dispatch-secret");
   if (provided !== secret) {
-    throw new Error("Unauthorized");
+    throw new HttpError("Unauthorized", 401);
+  }
+}
+
+async function readDispatchRequest(req: Request): Promise<DispatchRequest> {
+  const contentType = req.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return {};
+
+  try {
+    return await req.json() as DispatchRequest;
+  } catch (_error) {
+    throw new HttpError("Request body must be valid JSON", 400);
   }
 }
 
@@ -86,6 +123,13 @@ async function sendDelivery(
   serviceClient: ReturnType<typeof getServiceRoleClient>,
   delivery: PushDelivery,
 ) {
+  console.log("processing push delivery", {
+    delivery_id: delivery.id,
+    notification_id: delivery.notification_id,
+    tenant_user_id: delivery.tenant_user_id,
+    attempts: delivery.attempts,
+  });
+
   const { data: notification, error: notificationError } = await serviceClient
     .from("tenant_notifications")
     .select("id, type, title, body, request_id, ticket_id, payload")
@@ -119,6 +163,10 @@ async function sendDelivery(
 
   const activeTokens = (tokens ?? []) as PushToken[];
   if (activeTokens.length === 0) {
+    console.warn("push delivery skipped: no active tokens", {
+      delivery_id: delivery.id,
+      tenant_user_id: delivery.tenant_user_id,
+    });
     await markDelivery(
       serviceClient,
       delivery,
@@ -135,9 +183,20 @@ async function sendDelivery(
     try {
       await sendFcmMessage(pushToken, notification as TenantNotification);
       sent += 1;
+      console.log("fcm send succeeded", {
+        delivery_id: delivery.id,
+        token_id: pushToken.id,
+        platform: pushToken.platform,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(message);
+      console.error("fcm send failed", {
+        delivery_id: delivery.id,
+        token_id: pushToken.id,
+        platform: pushToken.platform,
+        error: message,
+      });
 
       if (
         message.includes("UNREGISTERED") ||
@@ -158,6 +217,125 @@ async function sendDelivery(
 
   await markDelivery(serviceClient, delivery, "failed", errors.join("; "));
   return { id: delivery.id, status: "failed", reason: errors.join("; ") };
+}
+
+async function getDiagnostics(
+  serviceClient: ReturnType<typeof getServiceRoleClient>,
+  request: DispatchRequest,
+) {
+  let tokenQuery = serviceClient
+    .from("tenant_push_tokens")
+    .select("id, tenant_user_id, platform, token, is_active, last_seen_at")
+    .order("last_seen_at", { ascending: false })
+    .limit(10);
+
+  let deliveryQuery = serviceClient
+    .from("tenant_push_deliveries")
+    .select(
+      "id, notification_id, tenant_user_id, status, attempts, last_error, " +
+        "sent_at, created_at",
+    )
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  if (request.tenant_user_id) {
+    tokenQuery = tokenQuery.eq("tenant_user_id", request.tenant_user_id);
+    deliveryQuery = deliveryQuery.eq(
+      "tenant_user_id",
+      request.tenant_user_id,
+    );
+  }
+
+  const [{ data: tokens, error: tokensError }, {
+    data: deliveries,
+    error: deliveriesError,
+  }] = await Promise.all([tokenQuery, deliveryQuery]);
+
+  if (tokensError) throw new HttpError(tokensError.message, 400);
+  if (deliveriesError) throw new HttpError(deliveriesError.message, 400);
+
+  return {
+    tokens: (tokens ?? []).map((token) => ({
+      ...token,
+      token: maskToken(token.token),
+    })),
+    deliveries: deliveries ?? [],
+  };
+}
+
+async function sendDebugSelfTest(
+  serviceClient: ReturnType<typeof getServiceRoleClient>,
+  request: DispatchRequest,
+) {
+  let query = serviceClient
+    .from("tenant_push_tokens")
+    .select("id, token, platform, tenant_user_id, last_seen_at")
+    .eq("is_active", true)
+    .order("last_seen_at", { ascending: false })
+    .limit(5);
+
+  if (request.tenant_user_id) {
+    query = query.eq("tenant_user_id", request.tenant_user_id);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new HttpError(error.message, 400);
+
+  const tokens = (data ?? []) as Array<PushToken & {
+    tenant_user_id: string;
+    last_seen_at: string;
+  }>;
+
+  if (tokens.length === 0) {
+    return {
+      status: "skipped",
+      reason: "missing_fcm_token",
+      tenant_user_id: request.tenant_user_id ?? null,
+    };
+  }
+
+  const notification: TenantNotification = {
+    id: crypto.randomUUID(),
+    type: "debug_push_test",
+    title: request.title ?? "RealtyOdyssey push test",
+    body: request.body ?? "If you see this, Firebase push is working.",
+    request_id: null,
+    ticket_id: null,
+    payload: {
+      request_reference: "DEBUG",
+      ticket_reference: "DEBUG",
+    },
+  };
+
+  const results = [];
+  for (const token of tokens) {
+    try {
+      await sendFcmMessage(token, notification);
+      results.push({
+        token_id: token.id,
+        token: maskToken(token.token),
+        tenant_user_id: token.tenant_user_id,
+        platform: token.platform,
+        status: "sent",
+      });
+    } catch (error) {
+      results.push({
+        token_id: token.id,
+        token: maskToken(token.token),
+        tenant_user_id: token.tenant_user_id,
+        platform: token.platform,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    status: results.some((result) => result.status === "sent")
+      ? "sent"
+      : "failed",
+    results,
+  };
 }
 
 async function markDelivery(
@@ -204,6 +382,8 @@ async function sendFcmMessage(
           data: {
             notification_id: notification.id,
             type: notification.type,
+            title: notification.title,
+            body: notification.body,
             request_id: notification.request_id ?? "",
             ticket_id: notification.ticket_id ?? "",
             route: routeForNotification(notification.type),
@@ -213,8 +393,9 @@ async function sendFcmMessage(
           android: {
             priority: "HIGH",
             notification: {
-              channel_id: "maintenance_reviews",
+              channel_id: "default",
               click_action: "FLUTTER_NOTIFICATION_CLICK",
+              sound: "default",
             },
           },
           apns: {
@@ -325,6 +506,11 @@ function requiredEnv(name: string) {
 
 function stringify(value: unknown) {
   return value == null ? "" : String(value);
+}
+
+function maskToken(token: string) {
+  if (token.length <= 16) return "***";
+  return `${token.slice(0, 8)}...${token.slice(-8)}`;
 }
 
 function routeForNotification(type: string) {
