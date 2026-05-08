@@ -35,7 +35,7 @@ create table if not exists app.tenant_notifications (
   opened_at       timestamptz,
   completed_at    timestamptz,
   created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
 );
 
 alter table app.tenant_notifications
