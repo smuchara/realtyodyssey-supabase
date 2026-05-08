@@ -96,6 +96,16 @@ Headers:
 - `x-push-dispatch-secret`: the exact `PUSH_DISPATCH_SECRET` value configured in
   Edge Function secrets.
 
+The same plaintext dispatch secret must exist in both places:
+
+- Edge Function secret: `PUSH_DISPATCH_SECRET=<secret value>`
+- Database Webhook header: `x-push-dispatch-secret: <same secret value>`
+
+Do not remove `PUSH_DISPATCH_SECRET` from Edge Function secrets. The Edge
+Function reads that value and compares it with the webhook header. The digest
+shown in the Supabase secrets screen is not the secret value and cannot be used
+as the webhook header.
+
 Alternative URL format:
 
 - `https://<project-ref>.functions.supabase.co/send-tenant-pushes`

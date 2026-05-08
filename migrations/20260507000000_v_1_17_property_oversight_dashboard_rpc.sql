@@ -1,9 +1,18 @@
 -- ============================================================================
--- V 1 26 PATCH: Fix collection_deadline column reference in oversight dashboard
+-- V 1 17: Property Oversight Dashboard RPC
 -- ============================================================================
--- collection_deadline is a derived field inside get_rent_payment_charge_snapshot(),
--- not a physical column on rent_charge_periods. Replace with due_on and
--- full_collection_delay_days which are the actual stored columns.
+-- Purpose
+--   - Expose a single get_property_oversight_dashboard() RPC that powers the
+--     top-level owner dashboard with all six KPIs in one round-trip.
+--
+-- KPIs:
+--   1. Collection Efficiency  — previous month collected / due (0-100 score)
+--   2. Occupancy Rate         — leased units / total units (0-100 score)
+--   3. Tenant Satisfaction    — derived proxy score (on-time pay + maintenance + disputes)
+--   4. Net Operating Income   — current month collected minus completed maintenance costs
+--   5. Expected Revenue       — scheduled rent for current month
+--   6. Revenue at Risk        — sum of overdue outstanding balances
+--   7. Vacant Units           — count / total (for progress card)
 -- ============================================================================
 
 create schema if not exists app;
@@ -76,6 +85,7 @@ begin
   end if;
 
   -- ── Collection Efficiency — previous month ────────────────────────────────
+  -- Previous month: collected / scheduled for all due charges in that window
   select
     coalesce(
       round(
@@ -181,8 +191,8 @@ begin
 
   -- ── Tenant satisfaction (derived proxy) ──────────────────────────────────
   -- Proxy 1: on-time payment rate from prev month (40%)
-  -- on-time = fully paid with full_collection_delay_days <= 0
-  -- (collection_deadline is not a stored column; delay is tracked via full_collection_delay_days)
+  -- On-time = fully paid with full_collection_delay_days <= 0 (paid before/on grace deadline)
+  -- due_on <= v_prev_period_end ensures the charge was already due (prev month always qualifies)
   select
     case
       when count(*) = 0 then 0
