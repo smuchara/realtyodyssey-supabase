@@ -51,15 +51,14 @@ Notes:
   registration.
 - `send-tenant-pushes` is protected by `x-push-dispatch-secret` matching
   `PUSH_DISPATCH_SECRET`; do not put this value in Flutter.
-- Database-triggered dispatch also needs the same `PUSH_DISPATCH_SECRET` stored
-  in Database Vault. Edge Function secrets are not readable from Postgres:
-  `select vault.create_secret('<same dispatch secret>',`
-  `'PUSH_DISPATCH_SECRET');`
 - Deploy `send-tenant-pushes` with JWT verification disabled. The function uses
   its own dispatch secret instead.
-- Schedule `send-tenant-pushes` with a `POST` request and the
+- Configure a Supabase Database Webhook on `app.tenant_push_deliveries` inserts
+  to call `send-tenant-pushes` with a `POST` request and the
   `x-push-dispatch-secret` header. Queued rows in `tenant_push_deliveries` will
   not become phone notifications until this function is called.
+- Use webhook URL:
+  `https://ifpfptvajcqdcpbtsfsc.functions.supabase.co/send-tenant-pushes`.
 - To inspect the latest saved tokens and delivery rows, call the function with:
   `{"action":"diagnostics","tenant_user_id":"<auth user id>"}`.
 - To send a server-side push test to the latest active token, call it with:
