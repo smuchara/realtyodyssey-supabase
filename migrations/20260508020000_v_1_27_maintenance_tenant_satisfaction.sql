@@ -18,11 +18,13 @@ create table if not exists app.tenant_notifications (
   request_id      uuid references app.maintenance_requests(id) on delete cascade,
   ticket_id       uuid references app.maintenance_tickets(id) on delete cascade,
   type            text not null check (
-                    type in (
+                  type in (
+                      'maintenance_status_update',
                       'maintenance_completion_review',
                       'maintenance_delay_checkin'
                     )
                   ),
+  event_key       text not null default 'default',
   title           text not null,
   body            text not null,
   deep_link       text,
@@ -33,10 +35,30 @@ create table if not exists app.tenant_notifications (
   opened_at       timestamptz,
   completed_at    timestamptz,
   created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now(),
-  constraint uq_tenant_notifications_maintenance_prompt
-    unique (tenant_user_id, ticket_id, type)
+  updated_at      timestamptz not null default now()
 );
+
+alter table app.tenant_notifications
+  add column if not exists event_key text not null default 'default';
+
+alter table app.tenant_notifications
+  drop constraint if exists tenant_notifications_type_check;
+
+alter table app.tenant_notifications
+  add constraint tenant_notifications_type_check
+  check (
+    type in (
+      'maintenance_status_update',
+      'maintenance_completion_review',
+      'maintenance_delay_checkin'
+    )
+  );
+
+alter table app.tenant_notifications
+  drop constraint if exists uq_tenant_notifications_maintenance_prompt;
+
+create unique index if not exists uq_tenant_notifications_maintenance_event
+  on app.tenant_notifications (tenant_user_id, ticket_id, type, event_key);
 
 drop trigger if exists trg_tenant_notifications_updated_at on app.tenant_notifications;
 create trigger trg_tenant_notifications_updated_at
@@ -262,7 +284,11 @@ set search_path = app, public
 as $$
 begin
   if new.status = 'pending'
-     and new.type in ('maintenance_completion_review', 'maintenance_delay_checkin') then
+     and new.type in (
+       'maintenance_status_update',
+       'maintenance_completion_review',
+       'maintenance_delay_checkin'
+     ) then
     insert into app.tenant_push_deliveries (notification_id, tenant_user_id)
     values (new.id, new.tenant_user_id)
     on conflict (notification_id) do nothing;
@@ -276,6 +302,171 @@ drop trigger if exists trg_tenant_notification_push_queued on app.tenant_notific
 create trigger trg_tenant_notification_push_queued
   after insert on app.tenant_notifications
   for each row execute function app.on_tenant_notification_push_queued();
+
+create or replace function app.enqueue_maintenance_status_update_notification(
+  p_ticket_id uuid,
+  p_status text,
+  p_old_status text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+declare
+  v_notification_id uuid;
+  v_row record;
+  v_title text;
+  v_body text;
+  v_status_label text;
+begin
+  select
+    t.id as ticket_id,
+    t.reference as ticket_reference,
+    t.workspace_id,
+    t.property_id,
+    t.unit_id,
+    r.id as request_id,
+    r.reference as request_reference,
+    r.tenant_user_id,
+    r.title as request_title,
+    c.label as category,
+    a.label as area,
+    f.name as fundi_name
+  into v_row
+  from app.maintenance_tickets t
+  join app.maintenance_requests r on r.id = t.request_id
+  join app.maintenance_categories c on c.id = r.category_id
+  join app.maintenance_areas a on a.id = r.area_id
+  left join app.fundi_profiles f on f.id = t.assigned_fundi_id
+  where t.id = p_ticket_id;
+
+  if not found then
+    return null;
+  end if;
+
+  v_status_label := case p_status
+    when 'assigned' then 'Assigned'
+    when 'in_progress' then 'In progress'
+    when 'approval_needed' then 'Waiting for approval'
+    when 'blocked' then 'Delayed'
+    else initcap(replace(coalesce(p_status, 'updated'), '_', ' '))
+  end;
+
+  v_title := case p_status
+    when 'assigned' then 'A fundi has been assigned'
+    when 'in_progress' then 'Maintenance work has started'
+    when 'approval_needed' then 'Your ticket needs approval'
+    when 'blocked' then 'Your maintenance ticket is delayed'
+    else 'Maintenance status updated'
+  end;
+
+  v_body := case p_status
+    when 'assigned' then coalesce(v_row.fundi_name, 'A fundi')
+      || ' has been assigned to your '
+      || lower(v_row.category)
+      || ' request.'
+    when 'in_progress' then 'Your '
+      || lower(v_row.category)
+      || ' request is now in progress.'
+    when 'approval_needed' then 'Your '
+      || lower(v_row.category)
+      || ' request is waiting for approval.'
+    when 'blocked' then 'Your '
+      || lower(v_row.category)
+      || ' request has been delayed. Tap to see the latest status.'
+    else 'Your maintenance ticket status changed to '
+      || lower(v_status_label)
+      || '.'
+  end;
+
+  insert into app.tenant_notifications (
+    tenant_user_id,
+    workspace_id,
+    property_id,
+    unit_id,
+    request_id,
+    ticket_id,
+    type,
+    event_key,
+    title,
+    body,
+    deep_link,
+    payload
+  )
+  values (
+    v_row.tenant_user_id,
+    v_row.workspace_id,
+    v_row.property_id,
+    v_row.unit_id,
+    v_row.request_id,
+    v_row.ticket_id,
+    'maintenance_status_update',
+    coalesce(p_status, 'updated'),
+    v_title,
+    v_body,
+    'maintenance/tracking',
+    jsonb_build_object(
+      'request_id', v_row.request_id,
+      'ticket_id', v_row.ticket_id,
+      'request_reference', v_row.request_reference,
+      'ticket_reference', v_row.ticket_reference,
+      'title', v_row.request_title,
+      'category', v_row.category,
+      'area', v_row.area,
+      'status', p_status,
+      'old_status', p_old_status,
+      'status_label', v_status_label,
+      'fundi_name', v_row.fundi_name
+    )
+  )
+  on conflict (tenant_user_id, ticket_id, type, event_key) do update
+    set title = excluded.title,
+        body = excluded.body,
+        payload = excluded.payload,
+        deep_link = excluded.deep_link,
+        status = case
+          when app.tenant_notifications.status = 'completed' then 'pending'
+          else app.tenant_notifications.status
+        end,
+        updated_at = now()
+  returning id into v_notification_id;
+
+  return v_notification_id;
+end;
+$$;
+
+create or replace function app.on_maintenance_ticket_status_update_prompt()
+returns trigger
+language plpgsql
+security definer
+set search_path = app, public
+as $$
+begin
+  if new.status is distinct from old.status
+     and new.status in ('assigned', 'in_progress', 'approval_needed', 'blocked') then
+    perform app.enqueue_maintenance_status_update_notification(
+      new.id,
+      new.status,
+      old.status
+    );
+  elsif new.assigned_fundi_id is not null
+     and new.assigned_fundi_id is distinct from old.assigned_fundi_id then
+    perform app.enqueue_maintenance_status_update_notification(
+      new.id,
+      'assigned',
+      old.status
+    );
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_maintenance_ticket_status_update_prompt on app.maintenance_tickets;
+create trigger trg_maintenance_ticket_status_update_prompt
+  after update of status, assigned_fundi_id on app.maintenance_tickets
+  for each row execute function app.on_maintenance_ticket_status_update_prompt();
 
 create or replace function app.enqueue_completed_maintenance_review_notification(
   p_ticket_id uuid
@@ -320,6 +511,7 @@ begin
     request_id,
     ticket_id,
     type,
+    event_key,
     title,
     body,
     deep_link,
@@ -333,6 +525,7 @@ begin
     v_row.request_id,
     v_row.ticket_id,
     'maintenance_completion_review',
+    'default',
     'Rate your maintenance service',
     'Your ' || lower(v_row.category) || ' ticket has been marked completed.',
     'maintenance/review',
@@ -346,7 +539,7 @@ begin
       'area', v_row.area
     )
   )
-  on conflict (tenant_user_id, ticket_id, type) do update
+  on conflict (tenant_user_id, ticket_id, type, event_key) do update
     set title = excluded.title,
         body = excluded.body,
         payload = excluded.payload,
@@ -360,7 +553,8 @@ begin
     from app.tenant_notifications
     where tenant_user_id = v_row.tenant_user_id
       and ticket_id = v_row.ticket_id
-      and type = 'maintenance_completion_review';
+    and type = 'maintenance_completion_review'
+    and event_key = 'default';
   end if;
 
   return v_notification_id;
@@ -429,6 +623,7 @@ begin
     request_id,
     ticket_id,
     type,
+    event_key,
     title,
     body,
     deep_link,
@@ -442,6 +637,7 @@ begin
     r.id,
     t.id,
     'maintenance_delay_checkin',
+    'default',
     'Is this issue resolved?',
     'This maintenance ticket has been open for more than two weeks.',
     'maintenance/delay-checkin',
@@ -465,7 +661,7 @@ begin
         and f.tenant_user_id = v_uid
         and f.feedback_type = 'delay_checkin'
     )
-  on conflict (tenant_user_id, ticket_id, type) do nothing;
+  on conflict (tenant_user_id, ticket_id, type, event_key) do nothing;
 
   get diagnostics v_inserted = row_count;
   return v_inserted;
@@ -532,8 +728,16 @@ begin
   end if;
 
   update app.tenant_notifications
-  set status = case when status = 'pending' then 'opened' else status end,
-      opened_at = coalesce(opened_at, now())
+  set status = case
+        when type = 'maintenance_status_update' then 'completed'
+        when status = 'pending' then 'opened'
+        else status
+      end,
+      opened_at = coalesce(opened_at, now()),
+      completed_at = case
+        when type = 'maintenance_status_update' then coalesce(completed_at, now())
+        else completed_at
+      end
   where id = p_notification_id
     and tenant_user_id = v_uid
     and status in ('pending', 'opened');
@@ -769,6 +973,7 @@ $$;
 
 grant execute on function app.enqueue_completed_maintenance_review_notification(uuid) to authenticated;
 grant execute on function app.ensure_maintenance_satisfaction_notifications() to authenticated;
+grant execute on function app.enqueue_maintenance_status_update_notification(uuid, text, text) to authenticated;
 grant execute on function app.register_tenant_push_token(text, text) to authenticated;
 grant execute on function app.get_tenant_notifications() to authenticated;
 grant execute on function app.mark_tenant_notification_opened(uuid) to authenticated;
