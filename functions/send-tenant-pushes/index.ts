@@ -206,9 +206,7 @@ async function sendFcmMessage(
             type: notification.type,
             request_id: notification.request_id ?? "",
             ticket_id: notification.ticket_id ?? "",
-            route: notification.type === "maintenance_delay_checkin"
-              ? "maintenance/delay-checkin"
-              : "maintenance/review",
+            route: routeForNotification(notification.type),
             ticket_reference: stringify(payload["ticket_reference"]),
             request_reference: stringify(payload["request_reference"]),
           },
@@ -327,4 +325,10 @@ function requiredEnv(name: string) {
 
 function stringify(value: unknown) {
   return value == null ? "" : String(value);
+}
+
+function routeForNotification(type: string) {
+  if (type === "maintenance_status_update") return "maintenance/tracking";
+  if (type === "maintenance_delay_checkin") return "maintenance/delay-checkin";
+  return "maintenance/review";
 }
