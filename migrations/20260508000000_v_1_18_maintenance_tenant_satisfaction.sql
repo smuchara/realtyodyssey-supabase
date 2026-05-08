@@ -1,5 +1,5 @@
 -- ============================================================================
--- V 1 27: Maintenance tenant satisfaction
+-- V 1 18: Maintenance tenant satisfaction
 -- ============================================================================
 -- Stores tenant-facing maintenance review prompts and feedback:
 --   - completion service rating (0-5) and optional comment
@@ -319,6 +319,7 @@ declare
   v_title text;
   v_body text;
   v_status_label text;
+  v_event_key text;
 begin
   select
     t.id as ticket_id,
@@ -344,6 +345,12 @@ begin
   if not found then
     return null;
   end if;
+
+  v_event_key := coalesce(p_old_status, 'none')
+    || '_to_'
+    || coalesce(p_status, 'updated')
+    || '_'
+    || gen_random_uuid()::text;
 
   v_status_label := case p_status
     when 'assigned' then 'Assigned'
@@ -402,7 +409,7 @@ begin
     v_row.request_id,
     v_row.ticket_id,
     'maintenance_status_update',
-    coalesce(p_status, 'updated'),
+    v_event_key,
     v_title,
     v_body,
     'maintenance/tracking',
@@ -420,16 +427,6 @@ begin
       'fundi_name', v_row.fundi_name
     )
   )
-  on conflict (tenant_user_id, ticket_id, type, event_key) do update
-    set title = excluded.title,
-        body = excluded.body,
-        payload = excluded.payload,
-        deep_link = excluded.deep_link,
-        status = case
-          when app.tenant_notifications.status = 'completed' then 'pending'
-          else app.tenant_notifications.status
-        end,
-        updated_at = now()
   returning id into v_notification_id;
 
   return v_notification_id;

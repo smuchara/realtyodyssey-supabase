@@ -1,5 +1,5 @@
 -- =============================================================================
--- V1.25 — User Profiles & Avatar Storage
+-- V 1 16: User Profiles & Avatar Storage
 -- Adds a lightweight profiles table for username + avatar_url, and creates the
 -- avatars storage bucket with appropriate RLS so tenants can manage their own
 -- profile photos.
