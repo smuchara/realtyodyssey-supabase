@@ -51,6 +51,10 @@ Notes:
   registration.
 - `send-tenant-pushes` is protected by `x-push-dispatch-secret` matching
   `PUSH_DISPATCH_SECRET`; do not put this value in Flutter.
+- Database-triggered dispatch also needs the same `PUSH_DISPATCH_SECRET` stored
+  in Database Vault. Edge Function secrets are not readable from Postgres:
+  `select vault.create_secret('<same dispatch secret>',`
+  `'PUSH_DISPATCH_SECRET');`
 - Deploy `send-tenant-pushes` with JWT verification disabled. The function uses
   its own dispatch secret instead.
 - Schedule `send-tenant-pushes` with a `POST` request and the
