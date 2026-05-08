@@ -165,7 +165,7 @@ begin
   join app.maintenance_areas a on a.id = r.area_id
   where t.id = p_ticket_id;
 
-  if v_row.ticket_id is null then
+  if not found then
     return null;
   end if;
 
@@ -254,10 +254,29 @@ as $$
 declare
   v_uid uuid := auth.uid();
   v_inserted integer := 0;
+  v_ticket_id uuid;
 begin
   if v_uid is null then
     raise exception 'Not authenticated' using errcode = 'P0401';
   end if;
+
+  for v_ticket_id in
+    select t.id
+    from app.maintenance_tickets t
+    join app.maintenance_requests r on r.id = t.request_id
+    where r.tenant_user_id = v_uid
+      and t.status in ('completed', 'verified')
+      and not exists (
+        select 1
+        from app.maintenance_ticket_feedback f
+        where f.ticket_id = t.id
+          and f.tenant_user_id = v_uid
+          and f.feedback_type = 'completion_review'
+      )
+  loop
+    perform app.enqueue_completed_maintenance_review_notification(v_ticket_id);
+    v_inserted := v_inserted + 1;
+  end loop;
 
   insert into app.tenant_notifications (
     tenant_user_id,
@@ -445,7 +464,7 @@ begin
   )
     and r.tenant_user_id = v_uid;
 
-  if v_ticket.ticket_id is null then
+  if not found then
     raise exception 'Maintenance ticket not found' using errcode = 'P0404';
   end if;
 
@@ -547,7 +566,7 @@ begin
   )
     and r.tenant_user_id = v_uid;
 
-  if v_ticket.ticket_id is null then
+  if not found then
     raise exception 'Maintenance ticket not found' using errcode = 'P0404';
   end if;
 
