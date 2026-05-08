@@ -93,8 +93,17 @@ async function sendDelivery(
     .maybeSingle();
 
   if (notificationError || notification == null) {
-    await markDelivery(serviceClient, delivery, "failed", "Notification not found");
-    return { id: delivery.id, status: "failed", reason: "notification_missing" };
+    await markDelivery(
+      serviceClient,
+      delivery,
+      "failed",
+      "Notification not found",
+    );
+    return {
+      id: delivery.id,
+      status: "failed",
+      reason: "notification_missing",
+    };
   }
 
   const { data: tokens, error: tokensError } = await serviceClient
@@ -110,7 +119,12 @@ async function sendDelivery(
 
   const activeTokens = (tokens ?? []) as PushToken[];
   if (activeTokens.length === 0) {
-    await markDelivery(serviceClient, delivery, "skipped", "No active push tokens");
+    await markDelivery(
+      serviceClient,
+      delivery,
+      "skipped",
+      "No active push tokens",
+    );
     return { id: delivery.id, status: "skipped", reason: "no_tokens" };
   }
 
