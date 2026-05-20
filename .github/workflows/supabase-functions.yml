@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: validate-functions
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     environment: production
     defaults:
       run:
@@ -141,6 +141,15 @@ jobs:
           before_sha="${{ github.event.before }}"
           if [[ -z "$before_sha" || "$before_sha" == "0000000000000000000000000000000000000000" ]]; then
             deploy_all=1
+          fi
+
+          # Force deploy-all when the remote project has no functions (e.g. new project)
+          if [[ "$deploy_all" -eq 0 ]]; then
+            remote_count=$(supabase functions list --workdir . --project-ref "$SUPABASE_PROJECT_REF" --output json 2>/dev/null | jq 'length' || echo "0")
+            if [[ "$remote_count" -eq 0 ]]; then
+              echo "Remote project has no functions — forcing full deploy."
+              deploy_all=1
+            fi
           fi
 
           if [[ "$deploy_all" -eq 1 ]]; then
