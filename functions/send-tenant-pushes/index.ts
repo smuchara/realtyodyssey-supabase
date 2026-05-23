@@ -518,5 +518,8 @@ function maskToken(token: string) {
 function routeForNotification(type: string) {
   if (type === "maintenance_status_update") return "maintenance/tracking";
   if (type === "maintenance_delay_checkin") return "maintenance/delay-checkin";
+  if (type === "access_scan_approved") return "access/history";
+  if (type === "access_scan_warning") return "access";
+  if (type === "access_scan_denied") return "access";
   return "maintenance/review";
 }
