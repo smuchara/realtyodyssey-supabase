@@ -140,25 +140,25 @@ BEGIN
       WHERE workspace_id = v_row.workspace_id
         AND deleted_at IS NULL
     LOOP
+      -- created_from_invite_id FK points to collaboration_invites, not user_invitations — omit it
       INSERT INTO app.property_memberships (
         property_id, user_id, role_id, domain_scope_id,
-        status, starts_at, created_from_invite_id, granted_by
+        status, starts_at, granted_by
       )
       VALUES (
         v_prop_id, auth.uid(), v_row.role_id, v_scope_id,
-        'active', now(), v_row.id, v_row.invited_by_user_id
+        'active', now(), v_row.invited_by_user_id
       )
       ON CONFLICT (property_id, user_id, domain_scope_id)
         WHERE deleted_at IS NULL AND status = 'active'
       DO UPDATE SET
-        role_id                = EXCLUDED.role_id,
-        status                 = 'active',
-        starts_at              = now(),
-        created_from_invite_id = EXCLUDED.created_from_invite_id,
-        granted_by             = EXCLUDED.granted_by,
-        deleted_at             = NULL,
-        deleted_by             = NULL,
-        updated_at             = now();
+        role_id    = EXCLUDED.role_id,
+        status     = 'active',
+        starts_at  = now(),
+        granted_by = EXCLUDED.granted_by,
+        deleted_at = NULL,
+        deleted_by = NULL,
+        updated_at = now();
     END LOOP;
   END IF;
 

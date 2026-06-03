@@ -147,13 +147,11 @@ create table if not exists app.security_scan_events (
   scanned_by_user_id      uuid not null references auth.users(id) on delete restrict,
   location_assignment_id  uuid references app.security_location_assignments(id) on delete set null,
   gate_zone_name          text,
-  -- Subject
   access_profile_id       uuid references app.access_profiles(id) on delete set null,
   guest_invitation_id     uuid references app.guest_invitations(id) on delete set null,
   person_type             text,
   person_name             text,
   unit_label              text,
-  -- Result
   scan_action             app.security_scan_action_enum not null,
   scan_result             app.security_scan_result_enum not null,
   denial_reason           text,
@@ -172,19 +170,19 @@ create index if not exists idx_security_scan_events_unit
 
 -- ── RLS (all access via security-definer RPCs only) ────────────────────────────
 
-revoke all on table app.security_staff_invitations   from public, anon, authenticated;
-revoke all on table app.security_staff_profiles      from public, anon, authenticated;
+revoke all on table app.security_staff_invitations    from public, anon, authenticated;
+revoke all on table app.security_staff_profiles       from public, anon, authenticated;
 revoke all on table app.security_location_assignments from public, anon, authenticated;
-revoke all on table app.security_scan_events         from public, anon, authenticated;
+revoke all on table app.security_scan_events          from public, anon, authenticated;
 
 -- ── Audit action types ─────────────────────────────────────────────────────────
 
 insert into app.lookup_audit_action_types (code, label, sort_order)
 values
-  ('SECURITY_STAFF_INVITED',   'Security Staff Invited',   300),
-  ('SECURITY_STAFF_ACCEPTED',  'Security Staff Accepted',  301),
+  ('SECURITY_STAFF_INVITED',    'Security Staff Invited',    300),
+  ('SECURITY_STAFF_ACCEPTED',   'Security Staff Accepted',   301),
   ('SECURITY_STAFF_DEACTIVATED','Security Staff Deactivated',302),
-  ('SECURITY_QR_SCANNED',      'Security QR Scanned',      303)
+  ('SECURITY_QR_SCANNED',       'Security QR Scanned',       303)
 on conflict (code) do update
 set label = excluded.label, sort_order = excluded.sort_order;
 
@@ -242,7 +240,6 @@ begin
 
   v_expires_at := now() + make_interval(days => greatest(coalesce(p_expires_days, 7), 1));
 
-  -- Block if a live invite already exists for this email under this PMC.
   if exists (
     select 1
     from app.security_staff_invitations i
@@ -343,7 +340,6 @@ begin
     raise exception 'The logged-in account email does not match the invited email address';
   end if;
 
-  -- Mark invite accepted.
   update app.security_staff_invitations
      set linked_user_id = auth.uid(),
          status = 'accepted',
@@ -351,7 +347,6 @@ begin
          updated_at = now()
    where id = v_invite.id;
 
-  -- Create staff profile.
   insert into app.security_staff_profiles (
     user_id, pmc_company_id, invitation_id,
     full_name, email, phone, role, status, activated_at
@@ -367,7 +362,6 @@ begin
   )
   returning id into v_staff_id;
 
-  -- Create location assignment if the invite had a property.
   if v_invite.property_id is not null then
     insert into app.security_location_assignments (
       staff_profile_id, pmc_company_id, property_id, gate_zone_name, is_active
@@ -395,7 +389,7 @@ begin
     'security_staff_profile_id', v_staff_id,
     'pmc_company_id', v_invite.pmc_company_id,
     'role', v_invite.role::text,
-    'full_name', coalesce(nullif(trim(coalesce(p_full_name,'')),  ''), v_invite.full_name)
+    'full_name', coalesce(nullif(trim(coalesce(p_full_name, '')), ''), v_invite.full_name)
   );
 end;
 $$;
@@ -471,8 +465,7 @@ $$;
 -- ============================================================================
 -- RPC: SECURITY VALIDATE QR SCAN
 -- ============================================================================
--- Security staff calls this with the decoded token value and desired action.
--- Returns a rich result object. Also records the event.
+-- Returns approved/warning/denied for a scanned token and records the event.
 
 create or replace function app.security_validate_qr_scan(
   p_token_value text,
@@ -484,39 +477,32 @@ security definer
 set search_path = app, public, extensions
 as $$
 declare
-  v_staff       record;
-  v_location    record;
-  -- resident path
-  v_res_token   record;
-  v_res_profile record;
-  v_res_invite  record;
-  v_last_res    record;
-  -- guest path
-  v_gst_token   record;
-  v_gst_invite  record;
-  v_last_gst    record;
-  -- result
-  v_person_type text;
-  v_person_name text;
-  v_unit_label  text;
-  v_property_id uuid;
-  v_unit_id     uuid;
-  v_profile_id  uuid;
+  v_staff        record;
+  v_location     record;
+  v_res_token    record;
+  v_res_profile  record;
+  v_last_res     record;
+  v_gst_token    record;
+  v_gst_invite   record;
+  v_last_gst     record;
+  v_person_type  text;
+  v_person_name  text;
+  v_unit_label   text;
+  v_property_id  uuid;
+  v_unit_id      uuid;
+  v_profile_id   uuid;
   v_guest_inv_id uuid;
-  v_scan_result app.security_scan_result_enum;
-  v_denial_msg  text;
-  v_result_data jsonb;
-  v_scan_id     uuid;
-  v_action_id   uuid;
+  v_scan_result  app.security_scan_result_enum;
+  v_denial_msg   text;
+  v_result_data  jsonb;
+  v_scan_id      uuid;
 begin
   if p_token_value is null or length(trim(p_token_value)) = 0 then
     return jsonb_build_object('scan_result', 'denied', 'denial_reason', 'Token is empty');
   end if;
 
-  -- Resolve the scanning staff member.
-  select
-    sp.id, sp.pmc_company_id, sp.full_name, sp.role, sp.status
-  into v_staff
+  select sp.id, sp.pmc_company_id, sp.full_name, sp.role, sp.status
+    into v_staff
   from app.security_staff_profiles sp
   where sp.user_id = auth.uid()
     and sp.status = 'active'
@@ -524,11 +510,12 @@ begin
   limit 1;
 
   if v_staff.id is null then
-    return jsonb_build_object('scan_result', 'denied',
-      'denial_reason', 'Your security profile is not active. Contact your administrator.');
+    return jsonb_build_object(
+      'scan_result',   'denied',
+      'denial_reason', 'Your security profile is not active. Contact your administrator.'
+    );
   end if;
 
-  -- Get primary location assignment.
   select la.id, la.property_id, la.gate_zone_name, p.display_name as property_name
     into v_location
   from app.security_location_assignments la
@@ -538,7 +525,7 @@ begin
   order by la.assigned_at desc
   limit 1;
 
-  -- ── Try resident token first ──────────────────────────────────────────────
+  -- ── Try resident token ─────────────────────────────────────────────────────
   select at2.id, at2.access_profile_id, at2.status, at2.valid_until
     into v_res_token
   from app.access_tokens at2
@@ -546,7 +533,6 @@ begin
   limit 1;
 
   if v_res_token.id is not null then
-    -- Validate token status and expiry.
     if v_res_token.status <> 'active' then
       v_scan_result := 'denied';
       v_denial_msg  := 'This QR code is no longer active.';
@@ -554,13 +540,13 @@ begin
       v_scan_result := 'denied';
       v_denial_msg  := 'This QR code has expired — the resident should open their app to refresh it.';
     else
-      -- Load access profile.
       select ap.id, ap.user_id, ap.pmc_company_id, ap.property_id, ap.unit_id,
-             ap.occupant_type, ap.status, u.label as unit_label,
+             ap.occupant_type, ap.status,
+             u.label  as unit_label,
              pr.first_name || ' ' || pr.last_name as resident_name
         into v_res_profile
       from app.access_profiles ap
-      join app.units u   on u.id = ap.unit_id
+      join app.units    u  on u.id  = ap.unit_id
       join app.profiles pr on pr.id = ap.user_id
       where ap.id = v_res_token.access_profile_id
       limit 1;
@@ -572,35 +558,37 @@ begin
         v_scan_result := 'denied';
         v_denial_msg  := 'This QR code belongs to a different property management company.';
       else
-        -- Check location assignment matches.
         if v_location.property_id is not null and
            v_location.property_id <> v_res_profile.property_id then
           v_scan_result := 'denied';
           v_denial_msg  := 'This QR code does not belong to your assigned property.';
         else
-          -- Check presence state for duplicate check-in prevention.
           select ae.event_type into v_last_res
           from app.access_events ae
           where ae.access_profile_id = v_res_profile.id
           order by ae.event_at desc
           limit 1;
 
-          if p_scan_action = 'entry' and v_last_res.event_type = 'check_in' then
+          if p_scan_action = 'entry' and
+             v_last_res.event_type = 'check_in'::app.access_event_type_enum then
             v_scan_result := 'warning';
             v_denial_msg  := 'This resident is already checked in. Record an exit first before logging another entry.';
           else
             v_scan_result := 'approved';
-            -- Log to access_events.
             insert into app.access_events (
               access_profile_id, access_token_id, event_type,
               pmc_company_id, property_id, unit_id,
               scanned_by, event_at, notes
             )
             values (
-              v_res_profile.id, v_res_token.id,
-              case when p_scan_action = 'entry' then 'check_in' else 'check_out' end,
-              v_res_profile.pmc_company_id, v_res_profile.property_id, v_res_profile.unit_id,
-              auth.uid(), now(),
+              v_res_profile.id,
+              v_res_token.id,
+              (case when p_scan_action = 'entry' then 'check_in' else 'check_out' end)::app.access_event_type_enum,
+              v_res_profile.pmc_company_id,
+              v_res_profile.property_id,
+              v_res_profile.unit_id,
+              auth.uid(),
+              now(),
               'Logged via Security Patrol Portal'
             );
           end if;
@@ -613,17 +601,16 @@ begin
           v_profile_id  := v_res_profile.id;
 
           v_result_data := jsonb_build_object(
-            'person_type',    v_person_type,
-            'person_name',    v_person_name,
-            'unit_label',     v_unit_label,
-            'property_name',  coalesce(v_location.property_name, ''),
-            'occupant_type',  v_res_profile.occupant_type::text
+            'person_type',   v_person_type,
+            'person_name',   v_person_name,
+            'unit_label',    v_unit_label,
+            'property_name', coalesce(v_location.property_name, ''),
+            'occupant_type', v_res_profile.occupant_type::text
           );
         end if;
       end if;
     end if;
 
-    -- Record scan event (resident path).
     insert into app.security_scan_events (
       pmc_company_id, property_id, unit_id,
       scanned_by_staff_id, scanned_by_user_id, location_assignment_id, gate_zone_name,
@@ -641,12 +628,12 @@ begin
     returning id into v_scan_id;
 
     return jsonb_build_object(
-      'scan_id',        v_scan_id,
-      'scan_result',    v_scan_result::text,
-      'scan_action',    p_scan_action::text,
-      'denial_reason',  v_denial_msg,
-      'token_type',     'resident',
-      'scanned_at',     now()
+      'scan_id',       v_scan_id,
+      'scan_result',   v_scan_result::text,
+      'scan_action',   p_scan_action::text,
+      'denial_reason', v_denial_msg,
+      'token_type',    'resident',
+      'scanned_at',    now()
     ) || coalesce(v_result_data, '{}'::jsonb);
   end if;
 
@@ -668,9 +655,9 @@ begin
              pr.first_name || ' ' || pr.last_name as inviter_name
         into v_gst_invite
       from app.guest_invitations gi
-      join app.units ap_u on ap_u.id = gi.unit_id
-      join app.access_profiles ap2 on ap2.id = gi.inviter_access_profile_id
-      join app.profiles pr on pr.id = ap2.user_id
+      join app.units          ap_u on ap_u.id = gi.unit_id
+      join app.access_profiles ap2  on ap2.id  = gi.inviter_access_profile_id
+      join app.profiles        pr   on pr.id   = ap2.user_id
       where gi.id = v_gst_token.guest_invitation_id
       limit 1;
 
@@ -692,7 +679,8 @@ begin
           order by gae.event_at desc
           limit 1;
 
-          if p_scan_action = 'entry' and v_last_gst.event_type = 'check_in' then
+          if p_scan_action = 'entry' and
+             v_last_gst.event_type = 'check_in'::app.access_event_type_enum then
             v_scan_result := 'warning';
             v_denial_msg  := format(
               'Guest %s is already checked in. Record an exit first.',
@@ -705,10 +693,14 @@ begin
               pmc_company_id, property_id, unit_id, scanned_by, event_at
             )
             values (
-              v_gst_invite.id, v_gst_token.id,
-              case when p_scan_action = 'entry' then 'check_in' else 'check_out' end,
-              v_gst_invite.pmc_company_id, v_gst_invite.property_id, v_gst_invite.unit_id,
-              auth.uid(), now()
+              v_gst_invite.id,
+              v_gst_token.id,
+              (case when p_scan_action = 'entry' then 'check_in' else 'check_out' end)::app.access_event_type_enum,
+              v_gst_invite.pmc_company_id,
+              v_gst_invite.property_id,
+              v_gst_invite.unit_id,
+              auth.uid(),
+              now()
             );
           end if;
 
@@ -720,11 +712,11 @@ begin
           v_guest_inv_id := v_gst_invite.id;
 
           v_result_data := jsonb_build_object(
-            'person_type',    'guest',
-            'person_name',    v_gst_invite.guest_name,
-            'inviter_name',   v_gst_invite.inviter_name,
-            'unit_label',     v_unit_label,
-            'property_name',  coalesce(v_location.property_name, '')
+            'person_type',   'guest',
+            'person_name',   v_gst_invite.guest_name,
+            'inviter_name',  v_gst_invite.inviter_name,
+            'unit_label',    v_unit_label,
+            'property_name', coalesce(v_location.property_name, '')
           );
         end if;
       end if;
@@ -747,16 +739,16 @@ begin
     returning id into v_scan_id;
 
     return jsonb_build_object(
-      'scan_id',        v_scan_id,
-      'scan_result',    v_scan_result::text,
-      'scan_action',    p_scan_action::text,
-      'denial_reason',  v_denial_msg,
-      'token_type',     'guest',
-      'scanned_at',     now()
+      'scan_id',       v_scan_id,
+      'scan_result',   v_scan_result::text,
+      'scan_action',   p_scan_action::text,
+      'denial_reason', v_denial_msg,
+      'token_type',    'guest',
+      'scanned_at',    now()
     ) || coalesce(v_result_data, '{}'::jsonb);
   end if;
 
-  -- Token not found in any table.
+  -- ── Token not found ────────────────────────────────────────────────────────
   insert into app.security_scan_events (
     pmc_company_id, property_id,
     scanned_by_staff_id, scanned_by_user_id, location_assignment_id, gate_zone_name,
@@ -806,28 +798,27 @@ begin
     raise exception 'Access denied';
   end if;
 
-  -- Metrics.
   select jsonb_build_object(
-    'total_staff',      count(*) filter (where status in ('active', 'suspended')),
-    'active_staff',     count(*) filter (where status = 'active'),
-    'pending_invites',  (
+    'total_staff',     count(*) filter (where status in ('active', 'suspended')),
+    'active_staff',    count(*) filter (where status = 'active'),
+    'pending_invites', (
       select count(*) from app.security_staff_invitations
       where pmc_company_id = auth.uid()
         and status in ('sent', 'pending', 'pending_delivery')
         and expires_at > now()
     ),
-    'scans_today',      (
+    'scans_today',     (
       select count(*) from app.security_scan_events
       where pmc_company_id = auth.uid()
         and scanned_at >= current_date
     ),
-    'entries_today',    (
+    'entries_today',   (
       select count(*) from app.security_scan_events
       where pmc_company_id = auth.uid()
         and scan_action = 'entry' and scan_result = 'approved'
         and scanned_at >= current_date
     ),
-    'exits_today',      (
+    'exits_today',     (
       select count(*) from app.security_scan_events
       where pmc_company_id = auth.uid()
         and scan_action = 'exit' and scan_result = 'approved'
@@ -838,7 +829,6 @@ begin
   from app.security_staff_profiles
   where pmc_company_id = auth.uid();
 
-  -- Staff list with location assignments.
   select coalesce(jsonb_agg(s order by s.activated_at desc), '[]'::jsonb)
     into v_staff_list
   from (
@@ -851,18 +841,16 @@ begin
       sp.status,
       sp.activated_at,
       sp.deactivated_at,
-      -- Most recent scan
       (select sse.scanned_at from app.security_scan_events sse
        where sse.scanned_by_staff_id = sp.id
        order by sse.scanned_at desc limit 1) as last_scan_at,
-      -- Location assignments
       coalesce((
         select jsonb_agg(jsonb_build_object(
-          'id', la.id,
-          'property_id', la.property_id,
+          'id',            la.id,
+          'property_id',   la.property_id,
           'property_name', p.display_name,
-          'gate_zone_name', la.gate_zone_name,
-          'is_active', la.is_active
+          'gate_zone_name',la.gate_zone_name,
+          'is_active',     la.is_active
         ))
         from app.security_location_assignments la
         join app.properties p on p.id = la.property_id
@@ -873,24 +861,23 @@ begin
     order by sp.activated_at desc
   ) s;
 
-  -- Pending invites (not yet accepted).
   select v_staff_list || coalesce((
     select jsonb_agg(jsonb_build_object(
-      'id', i.id,
-      'is_invite', true,
-      'full_name', i.full_name,
-      'email', i.email,
-      'phone', i.phone,
-      'role', i.role,
-      'status', 'invited',
-      'sent_at', i.sent_at,
-      'expires_at', i.expires_at,
+      'id',          i.id,
+      'is_invite',   true,
+      'full_name',   i.full_name,
+      'email',       i.email,
+      'phone',       i.phone,
+      'role',        i.role,
+      'status',      'invited',
+      'sent_at',     i.sent_at,
+      'expires_at',  i.expires_at,
       'location_assignments', coalesce(
         case when i.property_id is not null then
           jsonb_build_array(jsonb_build_object(
-            'property_id', i.property_id,
+            'property_id',   i.property_id,
             'property_name', (select display_name from app.properties where id = i.property_id),
-            'gate_zone_name', i.gate_zone_name
+            'gate_zone_name',i.gate_zone_name
           ))
         end,
         '[]'::jsonb
@@ -1064,8 +1051,7 @@ set search_path = app, public, extensions
 as $$
 declare
   v_token_hash text;
-  v_invite      record;
-  v_prop        record;
+  v_invite     record;
 begin
   v_token_hash := app.hash_token(nullif(trim(p_token), ''));
 
@@ -1083,31 +1069,15 @@ begin
   if v_invite.id is null then
     raise exception 'Invite not found or already accepted';
   end if;
-
   if v_invite.accepted_at is not null then
     raise exception 'This invite has already been accepted';
   end if;
-
   if v_invite.expires_at < now() then
     raise exception 'This invite has expired. Please contact your supervisor to resend it.';
   end if;
-
   if v_invite.cancelled_at is not null then
     raise exception 'This invite has been cancelled';
   end if;
-
-  -- Resolve PMC company name from profile
-  declare
-    v_pmc_name text;
-  begin
-    select coalesce(p.company_name, p.first_name || ' ' || p.last_name)
-      into v_pmc_name
-    from app.profiles p
-    where p.id = v_invite.pmc_company_id
-    limit 1;
-
-    v_pmc_name := coalesce(v_pmc_name, 'Property Management Company');
-  end;
 
   return jsonb_build_object(
     'invitation_id',    v_invite.id,
