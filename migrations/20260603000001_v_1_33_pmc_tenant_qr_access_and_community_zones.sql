@@ -343,3 +343,47 @@ $$;
 
 revoke all on function app.activate_property(uuid) from public, anon;
 grant execute on function app.activate_property(uuid) to authenticated;
+
+-- ─── Backfill: create access profiles for existing PMC tenants ────────────────
+-- accept_pending_tenant_invite (pre-V1.33) accepted invites without creating an
+-- access profile. Tenants who accepted before this migration was deployed have an
+-- active tenancy but no access_profiles row, so get_my_access_profile returns
+-- has_access=false and the QR tab never appears. This block is idempotent.
+
+do $$
+declare
+  r record;
+begin
+  for r in
+    select
+      ut.tenant_user_id,
+      ut.pmc_company_id,
+      ut.property_id,
+      ut.unit_id,
+      ut.lease_agreement_id,
+      ut.tenant_invitation_id
+    from app.unit_tenancies ut
+    where ut.pmc_company_id is not null
+      and ut.occupant_type = 'tenant_occupant'
+      and ut.status in ('active', 'scheduled')
+      and ut.tenant_user_id is not null
+      and not exists (
+        select 1
+        from app.access_profiles ap
+        where ap.user_id = ut.tenant_user_id
+          and ap.unit_id = ut.unit_id
+          and ap.status  = 'active'
+      )
+  loop
+    perform app.internal_create_access_profile_and_token(
+      p_user_id              => r.tenant_user_id,
+      p_pmc_company_id       => r.pmc_company_id,
+      p_property_id          => r.property_id,
+      p_unit_id              => r.unit_id,
+      p_occupant_type        => 'tenant_occupant',
+      p_lease_agreement_id   => r.lease_agreement_id,
+      p_tenant_invitation_id => r.tenant_invitation_id
+    );
+  end loop;
+end;
+$$;

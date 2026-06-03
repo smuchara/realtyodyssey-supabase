@@ -54,22 +54,22 @@ begin
 end;
 $$;
 
--- ── Helper: enqueue a scan push notification for a resident ───────────────────
+-- ============================================================================
+-- RPC: ENQUEUE ACCESS SCAN NOTIFICATION
+-- ============================================================================
 -- Called by security_validate_qr_scan after logging the scan event.
--- p_resident_user_id: the auth.users id of the resident (from access_profiles.user_id).
--- p_scan_result: 'approved' | 'warning' | 'denied'
--- p_scan_action: 'entry' | 'exit'
--- p_property_name, p_unit_label: context for the message body.
--- p_denial_reason: included in the body when result is denied.
+-- Requires workspace_id (looked up from property) and unit_id (NOT NULL columns).
 
 create or replace function app.enqueue_access_scan_notification(
   p_resident_user_id  uuid,
   p_property_id       uuid,
+  p_unit_id           uuid,
   p_scan_result       text,
   p_scan_action       text,
   p_property_name     text default null,
   p_unit_label        text default null,
-  p_denial_reason     text default null
+  p_denial_reason     text default null,
+  p_body_override     text default null
 )
 returns uuid
 language plpgsql
@@ -77,21 +77,30 @@ security definer
 set search_path = app, public
 as $$
 declare
-  v_notification_id uuid;
+  v_notification_id   uuid;
   v_notification_type text;
-  v_title text;
-  v_body  text;
-  v_location text;
+  v_title             text;
+  v_body              text;
+  v_location          text;
+  v_workspace_id      uuid;
 begin
-  if p_resident_user_id is null then
+  if p_resident_user_id is null or p_property_id is null or p_unit_id is null then
     return null;
   end if;
 
-  -- Only notify if the resident has at least one active push token.
   if not exists (
     select 1 from app.tenant_push_tokens
     where tenant_user_id = p_resident_user_id and is_active = true
   ) then
+    return null;
+  end if;
+
+  select workspace_id into v_workspace_id
+  from app.properties
+  where id = p_property_id
+  limit 1;
+
+  if v_workspace_id is null then
     return null;
   end if;
 
@@ -135,9 +144,15 @@ begin
     return null;
   end if;
 
+  if p_body_override is not null then
+    v_body := p_body_override;
+  end if;
+
   insert into app.tenant_notifications (
     tenant_user_id,
+    workspace_id,
     property_id,
+    unit_id,
     type,
     event_key,
     title,
@@ -147,7 +162,9 @@ begin
   )
   values (
     p_resident_user_id,
+    v_workspace_id,
     p_property_id,
+    p_unit_id,
     v_notification_type,
     'access_scan_' || p_scan_result || '_' || gen_random_uuid()::text,
     v_title,
@@ -166,8 +183,9 @@ begin
 end;
 $$;
 
--- ── Patch security_validate_qr_scan to enqueue notifications ─────────────────
--- Full replacement of the function (previously patched in 20260523000003).
+-- ============================================================================
+-- RPC: SECURITY VALIDATE QR SCAN (with push notifications + unit_id)
+-- ============================================================================
 
 create or replace function app.security_validate_qr_scan(
   p_token_value text,
@@ -179,17 +197,14 @@ security definer
 set search_path = app, public, extensions
 as $$
 declare
-  v_staff       record;
-  v_location    record;
-  -- resident path
-  v_res_token   record;
-  v_res_profile record;
-  v_last_res    record;
-  -- guest path
-  v_gst_token   record;
-  v_gst_invite  record;
-  v_last_gst    record;
-  -- result
+  v_staff        record;
+  v_location     record;
+  v_res_token    record;
+  v_res_profile  record;
+  v_last_res     record;
+  v_gst_token    record;
+  v_gst_invite   record;
+  v_last_gst     record;
   v_person_type   text;
   v_person_name   text;
   v_unit_label    text;
@@ -207,7 +222,6 @@ begin
     return jsonb_build_object('scan_result', 'denied', 'denial_reason', 'Token is empty');
   end if;
 
-  -- Resolve the scanning staff member.
   select sp.id, sp.pmc_company_id, sp.full_name, sp.role, sp.status
     into v_staff
   from app.security_staff_profiles sp
@@ -223,7 +237,6 @@ begin
     );
   end if;
 
-  -- Get primary location assignment.
   select la.id, la.property_id, la.gate_zone_name, p.display_name as property_name
     into v_location
   from app.security_location_assignments la
@@ -233,7 +246,7 @@ begin
   order by la.assigned_at desc
   limit 1;
 
-  -- ── Try resident token ─────────────────────────────────────────────────────
+  -- ── Resident token ─────────────────────────────────────────────────────────
   select at2.id, at2.access_profile_id, at2.status, at2.valid_until
     into v_res_token
   from app.access_tokens at2
@@ -320,7 +333,6 @@ begin
       end if;
     end if;
 
-    -- Record scan event (resident path).
     insert into app.security_scan_events (
       pmc_company_id, property_id, unit_id,
       scanned_by_staff_id, scanned_by_user_id, location_assignment_id, gate_zone_name,
@@ -337,11 +349,11 @@ begin
     )
     returning id into v_scan_id;
 
-    -- Send push notification to resident.
-    if v_resident_uid is not null then
+    if v_resident_uid is not null and v_unit_id is not null then
       perform app.enqueue_access_scan_notification(
         v_resident_uid,
         coalesce(v_property_id, v_location.property_id),
+        v_unit_id,
         v_scan_result::text,
         p_scan_action::text,
         v_location.property_name,
@@ -360,7 +372,7 @@ begin
     ) || coalesce(v_result_data, '{}'::jsonb);
   end if;
 
-  -- ── Try guest token ────────────────────────────────────────────────────────
+  -- ── Guest token ────────────────────────────────────────────────────────────
   select gat.id, gat.guest_invitation_id, gat.status
     into v_gst_token
   from app.guest_access_tokens gat
@@ -445,8 +457,6 @@ begin
       end if;
     end if;
 
-    -- Notify the resident who invited this guest (they hold an active push token).
-    -- Guests are external users and don't have push tokens in this system.
     declare
       v_inviter_uid uuid;
     begin
@@ -456,19 +466,23 @@ begin
       where gi2.id = v_gst_invite.id
       limit 1;
 
-      if v_inviter_uid is not null and v_scan_result in ('approved', 'warning') then
+      if v_inviter_uid is not null and v_unit_id is not null
+         and v_scan_result in ('approved', 'warning') then
         perform app.enqueue_access_scan_notification(
           v_inviter_uid,
           coalesce(v_property_id, v_location.property_id),
+          v_unit_id,
           v_scan_result::text,
           p_scan_action::text,
           v_location.property_name,
           v_unit_label,
+          null,
           case when v_scan_result = 'approved'
                then 'Your guest ' || v_gst_invite.guest_name || ' has been '
                     || case when p_scan_action = 'entry' then 'checked in' else 'checked out' end
                     || ' at ' || coalesce(v_location.property_name, 'your property') || '.'
-               else v_denial_msg
+               else 'Someone tried to check in as your guest ' || v_gst_invite.guest_name
+                    || ' but they were already marked as checked in.'
           end
         );
       end if;

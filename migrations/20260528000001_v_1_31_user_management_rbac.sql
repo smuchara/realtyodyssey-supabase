@@ -396,7 +396,9 @@ BEGIN
     RAISE EXCEPTION 'A live invite already exists for this email address';
   END IF;
 
-  v_token      := encode(gen_random_bytes(32), 'hex');
+  -- 64-char hex token: two UUIDs stripped of dashes — no pgcrypto needed
+  v_token      := replace(gen_random_uuid()::text, '-', '')
+               || replace(gen_random_uuid()::text, '-', '');
   v_token_hash := app.hash_token(v_token);
 
   INSERT INTO app.user_invitations (
@@ -450,7 +452,9 @@ BEGIN
     RAISE EXCEPTION 'Invitation not found';
   END IF;
 
-  v_token      := encode(gen_random_bytes(32), 'hex');
+  -- 64-char hex token: two UUIDs stripped of dashes — no pgcrypto needed
+  v_token      := replace(gen_random_uuid()::text, '-', '')
+               || replace(gen_random_uuid()::text, '-', '');
   v_token_hash := app.hash_token(v_token);
 
   UPDATE app.user_invitations
