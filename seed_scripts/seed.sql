@@ -9,14 +9,19 @@
 -- QR access control, guest passes, a security team, a community feed, and
 -- the reference records the admin web app's dashboards read from.
 --
--- The workspace owner is an EXISTING account (yidad43473@fisedo.com,
--- created through the real signup flow) — this script does not create that
--- account or touch its password, it only attaches a workspace + all of the
--- above data to it, and upgrades it to a Property Management Company account
--- so the PMC-only pages actually show up. A workspace is only created for it
--- if one doesn't already exist. Every OTHER seeded person (staff, tenants,
--- fundis, security guards) is a fabricated account this script creates, and
--- all of those share one password: Demo@2026!
+-- The workspace owner is meant to be an EXISTING account
+-- (yidad43473@fisedo.com, created through the real signup flow) — on that
+-- project, this script does not create the account or touch its password,
+-- it only attaches a workspace + all of the above data to it, and upgrades
+-- it to a Property Management Company account so the PMC-only pages
+-- actually show up. If that account doesn't exist yet in whatever database
+-- this runs against (a fresh CI run, a first-time local reset), one is
+-- created with that same email and the Demo@2026! password so the script
+-- still completes — check DEMO_CREDENTIALS.md for which case applies. A
+-- workspace is only created for the owner if one doesn't already exist.
+-- Every OTHER seeded person (staff, tenants, fundis, security guards) is a
+-- fabricated account this script creates, and all of those share one
+-- password: Demo@2026!
 --
 -- Usage:
 --   Run this file directly in the Supabase SQL editor against the target
@@ -105,10 +110,44 @@ end $$;
 -- ----------------------------------------------------------------------------
 -- 1. Workspace + PMC owner + staff
 -- ----------------------------------------------------------------------------
--- The workspace owner is YOUR existing account (yidad43473@fisedo.com,
--- created through the real signup flow) rather than a fabricated user.
--- Everything below is written to work whether or not that account already
--- has a workspace: a new one is only created if it doesn't.
+-- The workspace owner is meant to be YOUR existing account
+-- (yidad43473@fisedo.com, created through the real signup flow) rather than
+-- a fabricated user. But this file also needs to keep working in
+-- environments where that account doesn't exist yet (a fresh CI run against
+-- an ephemeral database, or a first-time local reset) — so the block below
+-- creates a matching account with that email only if one isn't already
+-- there. On your real project this is a no-op (the account already exists)
+-- and everything below correctly attaches to it instead. Everything is also
+-- written to work whether or not the account already has a workspace: a new
+-- one is only created if it doesn't.
+
+insert into auth.users (
+  instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+  last_sign_in_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
+  confirmation_token, email_change, email_change_token_new, recovery_token
+)
+select
+  '00000000-0000-0000-0000-000000000000', gen_random_uuid(), 'authenticated', 'authenticated',
+  'yidad43473@fisedo.com', extensions.crypt('Demo@2026!', extensions.gen_salt('bf')), now(),
+  now(), '{"provider":"email","providers":["email"]}'::jsonb,
+  jsonb_build_object(
+    'first_name', 'Property', 'last_name', 'Owner', 'account_type', 'property_management_company',
+    'company_name', 'My Property Portfolio', 'primary_contact_name', 'Property Owner'
+  ),
+  now(), now(), '', '', '', ''
+where not exists (select 1 from auth.users where email = 'yidad43473@fisedo.com');
+
+insert into auth.identities (id, user_id, provider_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
+select gen_random_uuid(), u.id, u.id::text, jsonb_build_object('sub', u.id::text, 'email', u.email), 'email', now(), now(), now()
+from auth.users u
+where u.email = 'yidad43473@fisedo.com'
+  and not exists (select 1 from auth.identities i where i.user_id = u.id);
+
+insert into public.profiles (user_id, username, avatar_url)
+select u.id, split_part(u.email, '@', 1), 'https://i.pravatar.cc/300?u=' || u.email
+from auth.users u
+where u.email = 'yidad43473@fisedo.com'
+  and not exists (select 1 from public.profiles pr where pr.user_id = u.id);
 
 -- Upgrade the existing account to a Property Management Company so the
 -- PMC-gated pages (QR access, guest invites, security team) actually show
